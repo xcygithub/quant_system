@@ -138,6 +138,193 @@ tab1, tab2, tab3, tab4 = st.tabs(["📊 行情数据", "🎯 策略回测", "�
 with tab1:
     st.header("行情数据")
     
+    # K线周期选择
+    kline_period = st.radio(
+        "K线周期",
+        ["日K", "周K", "月K", "年K"],
+        horizontal=True,
+        index=0
+    )
+    
+    # 移动平均线选择
+    st.subheader("移动平均线 (MA)")
+    col1, col2, col3, col4, col5 = st.columns(5)
+    show_ma5 = col1.checkbox("MA5", value=True)
+    show_ma10 = col2.checkbox("MA10", value=True)
+    show_ma20 = col3.checkbox("MA20", value=True)
+    show_ma60 = col4.checkbox("MA60", value=True)
+    show_ma120 = col5.checkbox("MA120", value=False)
+    
+    def convert_to_period(df, period='W'):
+        """将日K数据转换为周/月/年K
+        
+        Args:
+            df: 日K数据DataFrame
+            period: 'W' 周K, 'ME' 月K, 'YE' 年K
+        """
+        if df is None or df.empty:
+            return pd.DataFrame()
+        
+        df = df.copy()
+        df['date'] = pd.to_datetime(df['date'])
+        df = df.set_index('date').sort_index()
+        
+        # 按周期重采样
+        ohlc_dict = {
+            'open': 'first',
+            'high': 'max',
+            'low': 'min',
+            'close': 'last',
+            'volume': 'sum'
+        }
+        
+        if 'amount' in df.columns:
+            ohlc_dict['amount'] = 'sum'
+        
+        # 兼容新旧API
+        period_map = {'W': 'W', 'ME': 'M', 'YE': 'Y'}
+        actual_period = period_map.get(period, period)
+        
+        period_df = df.resample(actual_period).agg(ohlc_dict).dropna()
+        period_df = period_df.reset_index()
+        period_df['date'] = period_df['date'].dt.strftime('%Y-%m-%d')
+        
+        return period_df
+    
+    def calculate_ma(df, periods=[5, 10, 20, 60, 120]):
+        """计算移动平均线"""
+        if df is None or df.empty:
+            return df
+        
+        df = df.copy()
+        for period in periods:
+            if len(df) >= period:
+                df[f'ma{period}'] = df['close'].rolling(window=period).mean()
+        
+        return df
+    
+    def plot_candlestick_chart(df, symbol, period_name, show_ma5, show_ma10, show_ma20, show_ma60, show_ma120):
+        """绘制精美的K线图"""
+        if df is None or df.empty:
+            st.warning("没有数据可显示")
+            return None
+        
+        # 计算移动平均线
+        df = calculate_ma(df)
+        
+        # 创建K线图
+        fig = go.Figure()
+        
+        # K线颜色设置 (红涨绿跌，符合中国股市习惯)
+        colors = ['red' if df['close'].iloc[i] >= df['open'].iloc[i] else 'green' 
+                  for i in range(len(df))]
+        
+        # 添加K线
+        fig.add_trace(go.Candlestick(
+            x=df['date'],
+            open=df['open'],
+            high=df['high'],
+            low=df['low'],
+            close=df['close'],
+            name='K线',
+            increasing_line_color='#e74c3c',  # 红色上涨
+            decreasing_line_color='#27ae60',  # 绿色下跌
+            increasing_fillcolor='#e74c3c',
+            decreasing_fillcolor='#27ae60'
+        ))
+        
+        # 添加移动平均线
+        ma_config = [
+            (show_ma5, 'ma5', '#1e88e5', 1),
+            (show_ma10, 'ma10', '#ff9800', 1),
+            (show_ma20, 'ma20', '#9c27b0', 1),
+            (show_ma60, 'ma60', '#00bcd4', 1),
+            (show_ma120, 'ma120', '#795548', 1),
+        ]
+        
+        for show, ma_col, color, width in ma_config:
+            if show and ma_col in df.columns:
+                fig.add_trace(go.Scatter(
+                    x=df['date'],
+                    y=df[ma_col],
+                    mode='lines',
+                    name=ma_col.upper(),
+                    line=dict(color=color, width=width)
+                ))
+        
+        # 设置布局
+        fig.update_layout(
+            title={
+                'text': f"{symbol} {period_name}",
+                'font': dict(size=20, color='#2c3e50')
+            },
+            yaxis_title='价格',
+            xaxis_title='日期',
+            height=600,
+            template='plotly_white',
+            hovermode='x unified',
+            showlegend=True,
+            legend=dict(
+                orientation='h',
+                yanchor='bottom',
+                y=1.02,
+                xanchor='right',
+                x=1
+            ),
+            xaxis=dict(
+                rangeslider=dict(visible=False),
+                showgrid=True,
+                gridcolor='#f0f0f0'
+            ),
+            yaxis=dict(
+                showgrid=True,
+                gridcolor='#f0f0f0',
+                tickformat=',.2f'
+            ),
+            margin=dict(l=60, r=60, t=80, b=60)
+        )
+        
+        return fig
+    
+    def plot_volume_chart(df):
+        """绘制成交量柱状图"""
+        if df is None or df.empty:
+            return None
+        
+        # 成交量颜色 (红涨绿跌)
+        colors = ['#e74c3c' if df['close'].iloc[i] >= df['open'].iloc[i] else '#27ae60' 
+                  for i in range(len(df))]
+        
+        fig = go.Figure(data=[go.Bar(
+            x=df['date'],
+            y=df['volume'],
+            name='成交量',
+            marker_color=colors,
+            opacity=0.8
+        )])
+        
+        fig.update_layout(
+            title='成交量',
+            yaxis_title='成交量',
+            height=250,
+            template='plotly_white',
+            hovermode='x unified',
+            showlegend=True,
+            xaxis=dict(
+                rangeslider=dict(visible=False),
+                showgrid=True,
+                gridcolor='#f0f0f0'
+            ),
+            yaxis=dict(
+                showgrid=True,
+                gridcolor='#f0f0f0',
+                tickformat=',.0f'
+            ),
+            margin=dict(l=60, r=60, t=40, b=30)
+        )
+        
+        return fig
+    
     if st.button("获取数据", key="get_data"):
         with st.spinner("正在获取数据..."):
             try:
@@ -160,7 +347,9 @@ with tab1:
                     df = dm.get_daily_kline(symbol, start_date_str, end_date_str)
                 
                 if not df.empty:
-                    st.session_state['data'] = df
+                    # 保存原始日K数据
+                    st.session_state['data'] = df.copy()
+                    st.session_state['daily_data'] = df.copy()
                     
                     # 检查是否为模拟数据
                     is_simulated = 'data_source' in df.columns and df['data_source'].iloc[0] == 'simulated'
@@ -173,40 +362,16 @@ with tab1:
                     st.subheader("数据预览")
                     st.dataframe(df.head(20), use_container_width=True)
                     
-                    # K线图
-                    fig = go.Figure(data=[go.Candlestick(
-                        x=df['date'],
-                        open=df['open'],
-                        high=df['high'],
-                        low=df['low'],
-                        close=df['close'],
-                        name='K线'
-                    )])
+                    # 绘制K线图
+                    st.subheader("K线图")
+                    fig = plot_candlestick_chart(df, symbol, "日K", show_ma5, show_ma10, show_ma20, show_ma60, show_ma120)
+                    if fig:
+                        st.plotly_chart(fig, use_container_width=True)
                     
-                    fig.update_layout(
-                        title=f"{symbol} K线图",
-                        yaxis_title="价格",
-                        xaxis_title="日期",
-                        height=500
-                    )
-                    
-                    st.plotly_chart(fig, use_container_width=True)
-                    
-                    # 成交量图
-                    fig_vol = go.Figure(data=[go.Bar(
-                        x=df['date'],
-                        y=df['volume'],
-                        name='成交量',
-                        marker_color='blue'
-                    )])
-                    
-                    fig_vol.update_layout(
-                        title="成交量",
-                        yaxis_title="成交量",
-                        height=300
-                    )
-                    
-                    st.plotly_chart(fig_vol, use_container_width=True)
+                    # 绘制成交量图
+                    fig_vol = plot_volume_chart(df)
+                    if fig_vol:
+                        st.plotly_chart(fig_vol, use_container_width=True)
                 else:
                     st.error("❌ 获取数据失败")
                     st.info("请检查：\n1. 股票代码是否正确（如：000001、601919）\n2. 网络连接是否正常\n3. akshare 是否正常工作")
@@ -214,6 +379,44 @@ with tab1:
                 st.error(f"获取数据时发生错误: {str(e)}")
                 import traceback
                 st.code(traceback.format_exc())
+    
+    # 如果已有数据，允许切换K线周期
+    elif 'daily_data' in st.session_state:
+        df = st.session_state['daily_data']
+        
+        # 根据选择的周期转换数据
+        if kline_period == "日K":
+            period_df = df.copy()
+            period_name = "日K"
+        elif kline_period == "周K":
+            period_df = convert_to_period(df, 'W')
+            period_name = "周K"
+        elif kline_period == "月K":
+            period_df = convert_to_period(df, 'ME')
+            period_name = "月K"
+        else:  # 年K
+            period_df = convert_to_period(df, 'YE')
+            period_name = "年K"
+        
+        if not period_df.empty:
+            st.success(f"当前显示: {period_name} ({len(period_df)} 条数据)")
+            
+            # 显示数据预览
+            st.subheader(f"{period_name} 数据预览")
+            st.dataframe(period_df.head(20), use_container_width=True)
+            
+            # 绘制K线图
+            st.subheader(f"{period_name} K线图")
+            fig = plot_candlestick_chart(period_df, symbol, period_name, show_ma5, show_ma10, show_ma20, show_ma60, show_ma120)
+            if fig:
+                st.plotly_chart(fig, use_container_width=True)
+            
+            # 绘制成交量图
+            fig_vol = plot_volume_chart(period_df)
+            if fig_vol:
+                st.plotly_chart(fig_vol, use_container_width=True)
+        else:
+            st.warning(f"{period_name} 数据为空")
 
 # Tab 2: 策略回测
 with tab2:

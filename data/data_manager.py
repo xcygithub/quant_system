@@ -340,16 +340,32 @@ class DataManager:
             
         conn = sqlite3.connect(self.db_path)
         
-        # 准备数据
-        save_df = df[['symbol', 'date', 'open', 'high', 'low', 'close', 
-                      'volume', 'amount', 'turnover', 'amplitude', 
-                      'pct_change', 'change']].copy()
+        # 定义所有可能的列（与数据库表结构一致）
+        all_cols = ['symbol', 'date', 'open', 'high', 'low', 'close', 
+                   'volume', 'amount', 'turnover', 'amplitude', 
+                   'pct_change', 'change_amount']
+        
+        # 只选择存在的列，并填充缺失的列为0
+        existing_cols = [col for col in all_cols if col in df.columns]
+        missing_cols = [col for col in all_cols if col not in df.columns]
+        
+        save_df = df[existing_cols].copy()
+        
+        # 填充缺失的列
+        for col in missing_cols:
+            save_df[col] = 0.0
+        
+        # 确保列顺序一致
+        save_df = save_df[all_cols]
         
         # 使用REPLACE避免重复
-        save_df.to_sql('daily_kline', conn, if_exists='append', index=False,
-                      method='multi', chunksize=1000)
-        
-        conn.close()
+        try:
+            save_df.to_sql('daily_kline', conn, if_exists='append', index=False,
+                          method='multi', chunksize=1000)
+        except Exception as e:
+            print(f"保存数据失败: {e}")
+        finally:
+            conn.close()
     
     def _check_data_complete(self, df: pd.DataFrame, start_date: str, end_date: str) -> bool:
         """检查数据是否完整"""
