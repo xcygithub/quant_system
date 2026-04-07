@@ -453,15 +453,16 @@ class VectorizedBacktest:
         df['position'] = df['signal'].shift(1).fillna(0)  # 次日执行
         
         # 计算收益率
-        df['market_return'] = df['close'].pct_change()
+        df['market_return'] = df['close'].pct_change().fillna(0)  # 第一天收益为0
         # 修正：实际仓位比例为10%（每次交易使用初始资金的10%）
         actual_position_ratio = 0.1
         df['strategy_return'] = df['position'] * df['market_return'] * actual_position_ratio
         
         # 计算换手率和手续费
-        df['turnover'] = abs(df['position'].diff()) * actual_position_ratio
+        df['turnover'] = abs(df['position'].diff().fillna(0)) * actual_position_ratio
         df['commission'] = df['turnover'] * self.commission_rate
-        df['strategy_return'] -= df['commission']
+        df['strategy_return'] = (df['position'] * df['market_return'] * actual_position_ratio) - df['commission']
+        df['strategy_return'] = df['strategy_return'].fillna(0)  # 填充可能的NaN
         
         # 计算累计收益
         df['cumulative_market'] = (1 + df['market_return']).cumprod()

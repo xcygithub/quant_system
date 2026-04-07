@@ -718,12 +718,64 @@ with tab2:
                                     height=400
                                 )
                                 st.plotly_chart(fig, use_container_width=True)
-                            
-                            # 显示交易记录
-                            trades_df = engine.get_trades_df()
-                            if not trades_df.empty:
-                                st.subheader("交易记录")
-                                st.dataframe(trades_df, use_container_width=True, hide_index=True)
+
+                            # 显示完整的每次操作收益率表格
+                            trade_details_df = engine.get_trade_details_df()
+                            if not trade_details_df.empty:
+                                st.subheader("📋 每次操作收益率明细")
+
+                                # 统计信息
+                                closed_trades = [td for td in engine.trade_details if td.status == 'closed']
+                                open_trades = [td for td in engine.trade_details if td.status == 'open']
+
+                                stat_col1, stat_col2, stat_col3, stat_col4 = st.columns(4)
+                                with stat_col1:
+                                    st.metric("总交易次数", len(engine.trade_details))
+                                with stat_col2:
+                                    st.metric("已完成交易", len(closed_trades))
+                                with stat_col3:
+                                    st.metric("持有中", len(open_trades))
+                                with stat_col4:
+                                    if closed_trades:
+                                        win_count = len([t for t in closed_trades if t.net_return_rate > 0])
+                                        win_rate = win_count / len(closed_trades)
+                                        st.metric("胜率", f"{win_rate:.2%}")
+                                    else:
+                                        st.metric("胜率", "—")
+
+                                # 使用样式突出显示
+                                def highlight_return_market(val):
+                                    if isinstance(val, str) and '%' in val:
+                                        try:
+                                            num = float(val.replace('%', '').replace('¥', '').replace(',', '').replace('+', ''))
+                                            if num > 0:
+                                                return 'color: #dc3545'  # 红色涨
+                                            elif num < 0:
+                                                return 'color: #28a745'  # 绿色跌
+                                        except:
+                                            pass
+                                    return ''
+
+                                # 显示完整交易记录表格
+                                st.dataframe(
+                                    trade_details_df,
+                                    use_container_width=True,
+                                    hide_index=True
+                                )
+
+                                # 如果有持仓中的股票，显示详细信息
+                                if open_trades:
+                                    st.markdown("**📌 持仓明细（持有中）:**")
+                                    for td in open_trades:
+                                        st.markdown(
+                                            f"- {td.symbol}: 买入日期 {str(td.entry_date)[:10]}, "
+                                            f"价格 ¥{td.entry_price:.2f}, 数量 {td.entry_quantity}股, "
+                                            f"当前价 ¥{td.exit_price:.2f}, "
+                                            f"持有 {td.holding_days}天, "
+                                            f"浮动盈亏 ¥{td.profit:+,.2f} ({td.return_rate:+.2%})"
+                                        )
+                            else:
+                                st.info("本次回测无交易记录")
         else:
             # 单股票回测
             with st.spinner("正在运行回测..."):
@@ -749,10 +801,13 @@ with tab2:
                         strategy = MultiFactorStrategy(strategy_params)
                     
                     # 运行回测
-                    engine = VectorizedBacktest(df_with_factors, strategy)
-                    results = engine.run(
+                    engine = VectorizedBacktest(
                         initial_capital=initial_capital,
                         commission_rate=commission_rate
+                    )
+                    results = engine.run(
+                        price_data=df_with_factors,
+                        signal_series=strategy.get_signal_series(df_with_factors)
                     )
                     
                     # 显示结果
@@ -767,14 +822,117 @@ with tab2:
                         st.metric("最大回撤", f"{results['max_drawdown']:.2%}")
                     
                     # 绘制权益曲线
+                    equity_df = results['equity_curve'].copy()
+                    # 确保有date列
+                    if 'date' not in equity_df.columns:
+                        equity_df['date'] = df_with_factors['date'].values[:len(equity_df)]
+                    if 'total_value' not in equity_df.columns:
+                        equity_df['total_value'] = equity_df['strategy_equity']
+
                     fig = go.Figure()
                     fig.add_trace(go.Scatter(
-                        x=results['equity_curve']['date'],
-                        y=results['equity_curve']['total_value'],
+                        x=equity_df['date'],
+                        y=equity_df['total_value'],
                         name='账户净值'
                     ))
                     fig.update_layout(title='权益曲线', xaxis_title='日期', yaxis_title='净值')
                     st.plotly_chart(fig, use_container_width=True)
+
+                    # 显示每次操作的收益率表格
+                    trades = results.get('trades', [])
+                    if trades:
+                        st.subheader("📋 每次操作收益率明细")
+
+                        # 构建交易记录DataFrame
+                        trade_records = []
+                        for t in trades:
+                            # 格式化日期显示
+                            entry_date = t['entry_date']
+                            exit_date = t['exit_date']
+
+                            # 判断状态
+                            if t['status'] == 'open':
+                                status_text = "持有中"
+                            else:
+                                status_text = "已卖出"
+
+                            # 计算收益率（显示百分比）
+                            return_rate = t['return_rate']
+                            net_return_rate = t['net_return_rate']
+
+                            trade_records.append({
+                                '交易ID': t['trade_id'],
+                                '买入日期': str(entry_date)[:10] if entry_date else '',
+                                '买入价格': f"{t['entry_price']:.2f}",
+                                '买入数量': t['entry_quantity'],
+                                '买入金额': f"¥{t['entry_value']:,.2f}",
+                                '卖出日期': str(exit_date)[:10] if exit_date != '持有中' else '持有中',
+                                '卖出价格': f"{t['exit_price']:.2f}" if exit_date != '持有中' else '—',
+                                '卖出金额': f"¥{t['exit_value']:,.2f}" if exit_date != '持有中' else '—',
+                                '持有天数': f"{t['holding_days']}天",
+                                '收益率': f"{return_rate:.2%}",
+                                '净收益率': f"{net_return_rate:.2%}",
+                                '收益金额': f"¥{t['profit']:,.2f}",
+                                '手续费': f"¥{t['commission']:.2f}",
+                                '状态': status_text
+                            })
+
+                        trades_df = pd.DataFrame(trade_records)
+
+                        # 使用样式突出显示
+                        def highlight_return(val):
+                            if isinstance(val, str) and '%' in val:
+                                try:
+                                    num = float(val.replace('%', '').replace('¥', '').replace(',', ''))
+                                    if '%' in val and '¥' not in val:
+                                        if num > 0:
+                                            return 'color: #dc3545'  # 红色涨
+                                        elif num < 0:
+                                            return 'color: #28a745'  # 绿色跌
+                                except:
+                                    pass
+                            return ''
+
+                        # 显示统计信息
+                        closed_trades = [t for t in trades if t['status'] == 'closed']
+                        open_trades = [t for t in trades if t['status'] == 'open']
+
+                        stat_col1, stat_col2, stat_col3, stat_col4 = st.columns(4)
+                        with stat_col1:
+                            st.metric("总交易次数", len(trades))
+                        with stat_col2:
+                            st.metric("已完成交易", len(closed_trades))
+                        with stat_col3:
+                            st.metric("持有中", len(open_trades))
+                        with stat_col4:
+                            if closed_trades:
+                                win_rate = len([t for t in closed_trades if t['net_return_rate'] > 0]) / len(closed_trades)
+                                st.metric("胜率", f"{win_rate:.2%}")
+
+                        # 显示完整交易记录表格
+                        st.dataframe(
+                            trades_df,
+                            use_container_width=True,
+                            hide_index=True
+                        )
+
+                        # 如果有持仓中的股票，显示详细信息
+                        if open_trades:
+                            st.markdown("**📌 持仓明细（持有中）:**")
+                            for t in open_trades:
+                                holding_days = t['holding_days']
+                                return_rate = t['return_rate']
+                                unrealized_profit = t['profit']
+                                st.markdown(
+                                    f"- 买入日期: {str(t['entry_date'])[:10]}, "
+                                    f"价格: ¥{t['entry_price']:.2f}, "
+                                    f"数量: {t['entry_quantity']}股, "
+                                    f"当前价: ¥{t['exit_price']:.2f}, "
+                                    f"持有: {holding_days}天, "
+                                    f"浮动盈亏: ¥{unrealized_profit:+,.2f} ({return_rate:+.2%})"
+                                )
+                    else:
+                        st.info("本次回测无交易记录")
 
 # Tab 3: 绩效分析
 with tab3:

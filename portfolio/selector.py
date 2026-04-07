@@ -29,7 +29,7 @@ class StockScore:
     volatility_score: float = 0.0    # 波动率得分
     liquidity_score: float = 0.0    # 流动性得分
     composite_score: float = 0.0    # 综合得分
-    signal_type: str = ""           # 当前信号类型 (buy/sell/hold)
+    signal_type: str = "hold"           # 当前信号类型 (buy/sell/hold)
     signal_strength: float = 0.0    # 信号强度 (0-1)
 
     @property

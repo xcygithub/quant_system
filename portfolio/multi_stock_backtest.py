@@ -50,6 +50,51 @@ class TradeRecord:
 
 
 @dataclass
+class TradeDetail:
+    """
+    完整交易详情（匹配买入和卖出）
+    用于每次操作收益率表格
+    """
+    trade_id: int
+    symbol: str
+    # 买入信息
+    entry_date: Any = None
+    entry_price: float = 0.0
+    entry_quantity: int = 0
+    entry_amount: float = 0.0
+    entry_commission: float = 0.0  # 买入手续费
+    # 卖出信息
+    exit_date: Any = None
+    exit_price: float = 0.0
+    exit_quantity: int = 0
+    exit_amount: float = 0.0
+    exit_commission: float = 0.0  # 卖出手续费（含印花税）
+    # 计算字段
+    holding_days: int = 0
+    return_rate: float = 0.0  # 毛收益率
+    net_return_rate: float = 0.0  # 净收益率（扣除手续费）
+    profit: float = 0.0  # 收益金额
+    status: str = "open"  # open=持有中, closed=已卖出
+
+    def calculate_returns(self):
+        """计算收益率"""
+        if self.entry_price <= 0 or self.entry_quantity <= 0:
+            return
+
+        # 毛收益率
+        self.return_rate = (self.exit_price - self.entry_price) / self.entry_price
+
+        # 总手续费
+        total_commission = self.entry_commission + self.exit_commission
+
+        # 净收益率
+        self.net_return_rate = self.return_rate - (total_commission / self.entry_amount)
+
+        # 收益金额（扣除手续费）
+        self.profit = self.exit_amount - self.entry_amount - total_commission
+
+
+@dataclass
 class DailySnapshot:
     """每日快照"""
     date: Any
@@ -113,6 +158,12 @@ class MultiStockBacktest:
         self.trades: List[TradeRecord] = []
         self.snapshots: List[DailySnapshot] = []
 
+        # 完整的交易详情（配对买卖计算收益率）
+        self.trade_details: List[TradeDetail] = []
+        self.trade_id_counter: int = 0
+        # 追踪活跃的交易（买入但未卖出）
+        self.active_trades: Dict[str, TradeDetail] = {}  # symbol -> TradeDetail
+
         # 回测数据
         self.stock_data: Dict[str, pd.DataFrame] = {}
         self.signals: Dict[str, pd.Series] = {}
@@ -163,11 +214,12 @@ class MultiStockBacktest:
 
         # 同步所有股票的日期
         all_dates = self._get_common_dates(start_date, end_date)
-        print(f"回测期间: {all_dates[0]} ~ {all_dates[-1]}, 共 {len(all_dates)} 个交易日")
 
         if len(all_dates) == 0:
             print("错误: 没有可用的回测日期")
             return {}
+
+        print(f"回测期间: {all_dates[0]} ~ {all_dates[-1]}, 共 {len(all_dates)} 个交易日")
 
         # 重置状态
         self.cash = self.initial_capital
@@ -176,6 +228,9 @@ class MultiStockBacktest:
         self.snapshots = []
         self.trading_days = 0
         self.last_rebalance_day = -1
+        self.trade_details = []
+        self.trade_id_counter = 0
+        self.active_trades = {}
 
         # 遍历每个交易日
         for i, date in enumerate(all_dates):
@@ -188,13 +243,16 @@ class MultiStockBacktest:
             self._update_positions(current_prices)
 
             # 检查是否需要调仓
+            # 第一天(i=0)时，如果last_rebalance_day为-1，则(0-(-1))>=5=False，不会调仓
+            # 修改为：如果没有持仓(i < self.max_positions)，则强制调仓
             should_rebalance = (i - self.last_rebalance_day) >= self.rebalance_days
+            needs_initial_position = (len(self.positions) == 0 and self.cash > 0)
 
             # 检查卖出信号
             self._check_sell_signals(date, current_prices)
 
             # 如果需要调仓且有现金，选择新股票买入
-            if should_rebalance and self.cash > 0:
+            if (should_rebalance or needs_initial_position) and self.cash > 0:
                 self._rebalance(date, current_prices)
 
             # 记录每日快照
@@ -204,6 +262,11 @@ class MultiStockBacktest:
         if self.positions:
             last_prices = self._get_prices_on_date(all_dates[-1])
             self._close_all_positions(all_dates[-1], last_prices, "回测结束")
+
+        # 将剩余的活跃交易（持有中的）添加到trade_details
+        for symbol, td in self.active_trades.items():
+            td.status = "open"
+            self.trade_details.append(td)
 
         # 计算结果
         results = self._calculate_results(all_dates)
@@ -244,9 +307,14 @@ class MultiStockBacktest:
         """获取指定日期各股票的价格"""
         prices = {}
 
+        # 统一日期格式为字符串，确保能正确匹配
+        date_str = pd.to_datetime(date).strftime('%Y-%m-%d') if not isinstance(date, str) else date
+
         for symbol, df in self.stock_data.items():
             if 'date' in df.columns:
-                row = df[df['date'] == date]
+                # 日期可能是字符串或Timestamp，统一转为字符串比较
+                df_dates = pd.to_datetime(df['date']).dt.strftime('%Y-%m-%d')
+                row = df[df_dates == date_str]
             else:
                 row = df[df.index == date]
 
@@ -379,6 +447,11 @@ class MultiStockBacktest:
         if quantity <= 0 or price <= 0:
             return
 
+        # 确保数量是100的整数倍
+        quantity = int(quantity / 100) * 100
+        if quantity < 100:
+            return
+
         amount = price * quantity
         commission = amount * self.commission_rate
         total_cost = amount + commission
@@ -422,6 +495,30 @@ class MultiStockBacktest:
             reason=reason
         ))
 
+        # 创建/更新交易详情（配对用）
+        self.trade_id_counter += 1
+        trade_detail = TradeDetail(
+            trade_id=self.trade_id_counter,
+            symbol=symbol,
+            entry_date=date,
+            entry_price=price,
+            entry_quantity=quantity,
+            entry_amount=amount,
+            entry_commission=commission,
+            status="open"
+        )
+        # 如果同一股票有之前的持仓，先合并（简单处理：更新已有）
+        if symbol in self.active_trades:
+            # 更新现有交易的数量和成本
+            existing = self.active_trades[symbol]
+            total_qty = existing.entry_quantity + quantity
+            existing.entry_price = (existing.entry_price * existing.entry_quantity + price * quantity) / total_qty
+            existing.entry_quantity = total_qty
+            existing.entry_amount = existing.entry_price * total_qty
+            existing.entry_commission += commission
+        else:
+            self.active_trades[symbol] = trade_detail
+
     def _sell(
         self,
         symbol: str,
@@ -432,6 +529,11 @@ class MultiStockBacktest:
     ):
         """卖出"""
         if symbol not in self.positions or quantity <= 0:
+            return
+
+        # 确保数量是100的整数倍
+        quantity = int(quantity / 100) * 100
+        if quantity < 100:
             return
 
         pos = self.positions[symbol]
@@ -461,6 +563,28 @@ class MultiStockBacktest:
             commission=commission + stamp,
             reason=reason
         ))
+
+        # 更新交易详情（配对买卖，计算收益率）
+        if symbol in self.active_trades:
+            td = self.active_trades[symbol]
+            td.exit_date = date
+            td.exit_price = price
+            td.exit_quantity = sell_quantity
+            td.exit_amount = amount
+            td.exit_commission = commission + stamp
+
+            # 计算持有天数
+            entry_dt = pd.to_datetime(td.entry_date)
+            exit_dt = pd.to_datetime(date)
+            td.holding_days = (exit_dt - entry_dt).days
+
+            # 计算收益率
+            td.calculate_returns()
+            td.status = "closed"
+
+            # 将完成的交易移到trade_details列表
+            self.trade_details.append(td)
+            del self.active_trades[symbol]
 
     def _close_position(
         self,
@@ -623,6 +747,45 @@ class MultiStockBacktest:
             '手续费': t.commission,
             '原因': t.reason
         } for t in self.trades])
+
+    def get_trade_details_df(self) -> pd.DataFrame:
+        """
+        获取完整的交易详情DataFrame（每次操作收益率表格）
+
+        包含：买入日期/价格/数量，卖出日期/价格/数量，收益率，持有天数，状态
+        """
+        if not self.trade_details:
+            return pd.DataFrame()
+
+        records = []
+        for td in self.trade_details:
+            # 判断状态
+            if td.status == 'open':
+                status_text = "持有中"
+            else:
+                status_text = "已卖出"
+
+            records.append({
+                '交易ID': td.trade_id,
+                '股票': td.symbol,
+                '买入日期': str(td.entry_date)[:10] if td.entry_date else '',
+                '买入价格': f"¥{td.entry_price:.2f}",
+                '买入数量': td.entry_quantity,
+                '买入金额': f"¥{td.entry_amount:,.2f}",
+                '买入手续费': f"¥{td.entry_commission:.2f}",
+                '卖出日期': str(td.exit_date)[:10] if td.exit_date and td.exit_date != '持有中' else '持有中',
+                '卖出价格': f"¥{td.exit_price:.2f}" if td.exit_date and td.exit_date != '持有中' else '—',
+                '卖出数量': td.exit_quantity if td.exit_quantity > 0 else td.entry_quantity,
+                '卖出金额': f"¥{td.exit_amount:,.2f}" if td.exit_amount > 0 else '—',
+                '卖出手续费': f"¥{td.exit_commission:.2f}" if td.exit_commission > 0 else '—',
+                '持有天数': f"{td.holding_days}天" if td.holding_days > 0 else '—',
+                '收益率': f"{td.return_rate:.2%}",
+                '净收益率': f"{td.net_return_rate:.2%}",
+                '收益金额': f"¥{td.profit:+,.2f}",
+                '状态': status_text
+            })
+
+        return pd.DataFrame(records)
 
 
 def run_multi_stock_backtest(
