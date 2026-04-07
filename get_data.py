@@ -1,8 +1,11 @@
 import sqlite3
 import pandas as pd
+from pathlib import Path
 
 # ====================== 配置 ======================
-DB_PATH = "quant_data.db"  # 你的 SQLite 数据库文件路径
+# 统一使用 Claw 目录下的数据库（与 data_manager.py 保持一致）
+PROJECT_ROOT = Path(__file__).parent.parent
+DB_PATH = PROJECT_ROOT / "quant_data.db"
 
 
 # ====================== 通用查询函数 ======================
@@ -74,14 +77,15 @@ if __name__ == '__main__':
     print("=== 股票基础信息 ===")
     print(get_stock_info(limit=10))
 
-    # 2. 查询某只股票的日线数据
+    # 2. 查询某只股票的日线数据（注意：symbol需要带交易所后缀）
     print("\n=== 日线K线 ===")
-    print(get_daily_kline(symbol="000001", limit=10))
+    print(get_daily_kline(symbol="000001.SH", limit=10))  # 上证指数
+    print(get_daily_kline(symbol="601919.SH", limit=10))   # 中远海控
 
     # 3. 查询某只股票的分钟数据
     print("\n=== 分钟K线 ===")
-    print(get_minute_kline(symbol="000001", limit=5))
+    print(get_minute_kline(symbol="000001.SH", limit=5))
 
     # 4. 查询财务数据
     print("\n=== 财务数据 ===")
-    print(get_financial_data(symbol="000001", limit=3))
+    print(get_financial_data(symbol="000001.SH", limit=3))

@@ -18,14 +18,17 @@ from .data_sources import MultiDataSource
 class DataManager:
     """数据管理器 - 负责数据的获取、缓存和更新"""
     
-    def __init__(self, db_path: str = "quant_data.db"):
+    def __init__(self, db_path: str = None):
         """
         初始化数据管理器
-        
+
         Args:
-            db_path: SQLite数据库路径
+            db_path: SQLite数据库路径，默认使用 Claw 目录下的 quant_data.db
         """
-        self.db_path = db_path
+        if db_path is None:
+            # 统一使用 Claw 目录下的数据库（与项目分离，方便管理）
+            db_path = Path(__file__).parent.parent.parent / "quant_data.db"
+        self.db_path = str(db_path)
         self.cache_dir = Path("data_cache")
         self.cache_dir.mkdir(exist_ok=True)
         self.data_source = MultiDataSource()  # 使用多数据源
@@ -337,32 +340,51 @@ class DataManager:
         """保存K线数据到数据库"""
         if df.empty:
             return
-            
+
         conn = sqlite3.connect(self.db_path)
-        
+        cursor = conn.cursor()
+
         # 定义所有可能的列（与数据库表结构一致）
-        all_cols = ['symbol', 'date', 'open', 'high', 'low', 'close', 
-                   'volume', 'amount', 'turnover', 'amplitude', 
+        all_cols = ['symbol', 'date', 'open', 'high', 'low', 'close',
+                   'volume', 'amount', 'turnover', 'amplitude',
                    'pct_change', 'change_amount']
-        
+
         # 只选择存在的列，并填充缺失的列为0
         existing_cols = [col for col in all_cols if col in df.columns]
         missing_cols = [col for col in all_cols if col not in df.columns]
-        
+
         save_df = df[existing_cols].copy()
-        
+
         # 填充缺失的列
         for col in missing_cols:
             save_df[col] = 0.0
-        
+
         # 确保列顺序一致
         save_df = save_df[all_cols]
-        
-        # 使用REPLACE避免重复
+
+        # 使用事务批量插入，先删除已存在的记录，再插入新数据
+        # 这样可以避免 INSERT OR REPLACE 可能带来的问题
         try:
-            save_df.to_sql('daily_kline', conn, if_exists='append', index=False,
-                          method='multi', chunksize=1000)
+            cursor.execute("BEGIN TRANSACTION")
+            for _, row in save_df.iterrows():
+                # 先删除已存在的记录（如果主键冲突）
+                cursor.execute("""
+                    DELETE FROM daily_kline WHERE symbol = ? AND date = ?
+                """, (row['symbol'], row['date']))
+
+                # 插入新记录
+                cursor.execute("""
+                    INSERT INTO daily_kline
+                    (symbol, date, open, high, low, close, volume, amount, turnover, amplitude, pct_change, change_amount)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    row['symbol'], row['date'], row['open'], row['high'], row['low'],
+                    row['close'], row['volume'], row['amount'], row.get('turnover', 0),
+                    row.get('amplitude', 0), row.get('pct_change', 0), row.get('change_amount', 0)
+                ))
+            cursor.execute("COMMIT")
         except Exception as e:
+            cursor.execute("ROLLBACK")
             print(f"保存数据失败: {e}")
         finally:
             conn.close()

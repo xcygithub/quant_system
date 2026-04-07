@@ -17,6 +17,8 @@ from backtest.performance import PerformanceAnalyzer
 from strategy.moving_average import MovingAverageCrossStrategy, MACDStrategy, BollingerBandsStrategy
 from strategy.multi_factor import MultiFactorStrategy, RSIStrategy
 from risk.manager import RiskManager, PositionSizer, PositionSizingMethod, RiskLimits
+from portfolio.watchlist import WatchlistManager, get_watchlist_manager
+from portfolio.multi_stock_backtest import MultiStockBacktest, run_multi_stock_backtest
 
 
 class QuantSystem:
@@ -37,7 +39,7 @@ class QuantSystem:
         
         # 初始化各模块
         self.data_manager = DataManager(
-            db_path=self.config.get('db_path', 'quant_data.db')
+            db_path=self.config.get('db_path', None)  # 默认使用统一的数据库路径
         )
         
         self.risk_manager = RiskManager(
@@ -172,7 +174,117 @@ class QuantSystem:
         }
         
         return self.results
-    
+
+    def run_multi_stock_backtest(
+        self,
+        strategy: str,
+        symbols: list,
+        start_date: str,
+        end_date: str,
+        initial_capital: float = 1000000,
+        strategy_params: dict = None,
+        max_positions: int = 5,
+        rebalance_days: int = 5,
+        position_method: str = "equal",
+        max_single_position: float = 0.3,
+        max_total_position: float = 0.8
+    ) -> dict:
+        """
+        运行多股票策略回测
+
+        Args:
+            strategy: 策略名称 (ma_cross/macd/bollinger/multi_factor/rsi)
+            symbols: 股票代码列表
+            start_date: 开始日期
+            end_date: 结束日期
+            initial_capital: 初始资金
+            strategy_params: 策略参数
+            max_positions: 最大持仓股票数
+            rebalance_days: 调仓周期（交易日）
+            position_method: 仓位分配方法 (equal/risk_parity/momentum/score/kelly)
+            max_single_position: 单只股票最大仓位比例
+            max_total_position: 最大总仓位比例
+
+        Returns:
+            回测结果字典
+        """
+        print(f"\n{'='*60}")
+        print(f"开始多股票回测 | 策略: {strategy} | 股票数: {len(symbols)}")
+        print(f"回测期间: {start_date} ~ {end_date}")
+        print(f"{'='*60}\n")
+
+        # 1. 获取所有股票数据
+        print("📊 获取股票数据...")
+        stock_data = {}
+        strategy_params = strategy_params or {}
+
+        for symbol in symbols:
+            df = self.data_manager.get_daily_kline(symbol, start_date, end_date)
+            if not df.empty:
+                stock_data[symbol] = df
+                print(f"  ✅ {symbol}: {len(df)} 条数据")
+            else:
+                print(f"  ❌ {symbol}: 无数据")
+
+        if len(stock_data) == 0:
+            print("❌ 所有股票都没有数据!")
+            return {}
+
+        print(f"\n✅ 成功获取 {len(stock_data)} 只股票的数据")
+
+        # 2. 为每只股票计算信号
+        print("\n🎯 生成交易信号...")
+        signals = {}
+
+        for symbol, df in stock_data.items():
+            try:
+                # 计算因子
+                factor_data = FactorData(df)
+                df_with_factors = factor_data.calculate_all_factors()
+
+                # 创建策略
+                if strategy == 'ma_cross':
+                    strat = MovingAverageCrossStrategy(strategy_params)
+                elif strategy == 'macd':
+                    strat = MACDStrategy(strategy_params)
+                elif strategy == 'bollinger':
+                    strat = BollingerBandsStrategy(strategy_params)
+                elif strategy == 'multi_factor':
+                    strat = MultiFactorStrategy(strategy_params)
+                elif strategy == 'rsi':
+                    strat = RSIStrategy(strategy_params)
+                else:
+                    raise ValueError(f"未知策略: {strategy}")
+
+                # 获取信号
+                signal_series = strat.get_signal_series(df_with_factors)
+                signals[symbol] = signal_series
+
+            except Exception as e:
+                print(f"  ⚠️ {symbol} 信号计算失败: {e}")
+
+        print(f"✅ 成功生成 {len(signals)} 只股票的信号")
+
+        # 3. 运行多股票回测
+        print("\n🚀 运行多股票回测...")
+        engine = MultiStockBacktest(
+            initial_capital=initial_capital,
+            commission_rate=self.config.get('commission_rate', 0.0003),
+            max_positions=max_positions,
+            rebalance_days=rebalance_days,
+            position_method=position_method,
+            max_single_position=max_single_position,
+            max_total_position=max_total_position
+        )
+
+        engine.set_data(stock_data, signals)
+        results = engine.run(start_date, end_date)
+
+        # 4. 保存结果
+        self.results = results
+
+        return results
+
     def compare_strategies(
         self,
         strategies: list,

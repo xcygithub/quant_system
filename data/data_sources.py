@@ -78,7 +78,7 @@ class AkshareDataSource(DataSourceBase):
                         '成交额': 'amount',
                         '振幅': 'amplitude',
                         '涨跌幅': 'pct_change',
-                        '涨跌额': 'change',
+                        '涨跌额': 'change_amount',  # 修复：与数据库表字段名一致
                         '换手率': 'turnover'
                     })
                     df['symbol'] = symbol
@@ -124,11 +124,21 @@ class BaostockDataSource(DataSourceBase):
                 print(f"  [!] Baostock登录失败: {lg.error_msg}")
                 return pd.DataFrame()
             
-            # 转换代码格式
-            if symbol.startswith('6'):
-                code = f"sh.{symbol}"
+            # 转换代码格式：处理带后缀的格式如 000001.SZ -> sz.000001
+            # 优先根据原后缀判断，避免 000001.SH 和 000001.SZ 混淆
+            if symbol.endswith('.SH'):
+                code = f"sh.{symbol[:-3]}"  # 000001.SH -> sh.000001
+            elif symbol.endswith('.SZ'):
+                code = f"sz.{symbol[:-3]}"  # 000001.SZ -> sz.000001
+            elif symbol.endswith('.BJ'):
+                code = f"bj.{symbol[:-3]}"  # 000001.BJ -> bj.000001
             else:
-                code = f"sz.{symbol}"
+                # 没有后缀时，根据数字判断
+                clean_symbol = symbol
+                if clean_symbol.startswith('6') or clean_symbol.startswith('9'):
+                    code = f"sh.{clean_symbol}"
+                else:
+                    code = f"sz.{clean_symbol}"
             
             rs = self.bs.query_history_k_data_plus(
                 code,
@@ -228,7 +238,7 @@ class EastmoneyDataSource(DataSourceBase):
                     'amount': float(parts[6]),
                     'amplitude': float(parts[7]),
                     'pct_change': float(parts[8]),
-                    'change': float(parts[9]),
+                    'change_amount': float(parts[9]),  # 修复：与数据库表字段名一致
                     'turnover': float(parts[10]) if len(parts) > 10 else 0
                 })
             
@@ -355,19 +365,20 @@ class SimulatedDataSource(DataSourceBase):
 class MultiDataSource:
     """多数据源管理器 - 自动切换数据源"""
     
-    def __init__(self, prefer_source: str = None):
+    def __init__(self, prefer_source: str = "baostock"):
         self.sources = []
         self.prefer_source = prefer_source
         self._init_sources()
     
     def _init_sources(self):
         """初始化所有数据源"""
-        # 按优先级添加数据源（优先使用国内数据源）
+        # 按优先级添加数据源（优先使用baostock真实数据）
+        self.sources.append(BaostockDataSource())  # 优先使用baostock
         self.sources.append(AkshareDataSource(max_retries=3))
-        self.sources.append(BaostockDataSource())  # 推荐备选
         self.sources.append(EastmoneyDataSource())  # 直接API
         self.sources.append(CSVDataSource())
-        self.sources.append(SimulatedDataSource())  # 最后使用模拟数据
+        # 模拟数据作为最后备选，但默认不使用
+        # self.sources.append(SimulatedDataSource())
     
     def get_daily_kline(self, symbol: str, start_date: str, end_date: str, 
                        prefer_source: str = None) -> pd.DataFrame:
