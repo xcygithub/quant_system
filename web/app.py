@@ -307,6 +307,234 @@ def plot_kline(df, symbol, period='D'):
 
     return fig
 
+
+def plot_kline_with_signals(df, symbol, signals, period='D'):
+    """
+    绘制带交易信号的K线图
+
+    Args:
+        df: K线DataFrame
+        symbol: 股票代码
+        signals: 信号序列 (1=买入, -1=卖出, 0=持仓)
+        period: 'D' 日K, 'W' 周K, 'M' 月K, 'Y' 年K
+    """
+    import plotly.graph_objects as go
+    from plotly.subplots import make_subplots
+
+    df = df.copy()
+
+    # 确保信号索引与日期对齐
+    if len(signals) != len(df):
+        # 如果长度不匹配，使用前n个
+        signals = signals[:len(df)]
+
+    # 创建子图：K线图 + 成交量 + 信号
+    fig = make_subplots(
+        rows=3, cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.06,
+        row_heights=[0.55, 0.25, 0.20],
+        subplot_titles=('', '成交量', '交易信号')
+    )
+
+    # K线 - 使用中国颜色惯例：红涨绿跌
+    fig.add_trace(
+        go.Candlestick(
+            x=df['date'],
+            open=df['open'],
+            high=df['high'],
+            low=df['low'],
+            close=df['close'],
+            name='K线',
+            increasing_line_color='#FF0000',
+            decreasing_line_color='#00A000',
+            increasing_fillcolor='#FF0000',
+            decreasing_fillcolor='#00A000',
+        ),
+        row=1, col=1
+    )
+
+    # 添加MA均线
+    if period == 'D':
+        ma_periods = [5, 10, 20, 60]
+        ma_labels = ['MA5', 'MA10', 'MA20', 'MA60']
+    elif period == 'W':
+        ma_periods = [5, 10, 20]
+        ma_labels = ['MA5', 'MA10', 'MA20']
+    elif period == 'M':
+        ma_periods = [3, 6, 12]
+        ma_labels = ['MA3', 'MA6', 'MA12']
+    else:
+        ma_periods = [3, 5]
+        ma_labels = ['MA3', 'MA5']
+
+    for ma_period, ma_label in zip(ma_periods, ma_labels):
+        if len(df) >= ma_period:
+            df[f'ma{ma_period}'] = df['close'].rolling(ma_period).mean()
+            fig.add_trace(go.Scatter(
+                x=df['date'], y=df[f'ma{ma_period}'],
+                name=ma_label,
+                line=dict(width=1.5)
+            ), row=1, col=1)
+
+    # 成交量柱状图
+    colors = ['#FF0000' if c >= o else '#00A000' for c, o in zip(df['close'], df['open'])]
+    fig.add_trace(
+        go.Bar(
+            x=df['date'],
+            y=df['volume'],
+            marker_color=colors,
+            name='成交量',
+            opacity=0.7
+        ),
+        row=2, col=1
+    )
+
+    # 计算买卖信号点
+    # 信号变化检测：从-1到1是买入，从1到-1是卖出
+    buy_signals = []
+    sell_signals = []
+
+    prev_signal = 0
+    for i, (date, row) in enumerate(df.iterrows()):
+        current_signal = signals.iloc[i] if hasattr(signals, 'iloc') else signals[i]
+
+        # 买入信号：从前一个非1信号变为1
+        if prev_signal != 1 and current_signal == 1:
+            buy_signals.append({
+                'date': date,
+                'price': row['low'] * 0.98,  # 标记在K线下方
+                'signal': 1
+            })
+
+        # 卖出信号：从前一个非-1信号变为-1
+        if prev_signal != -1 and current_signal == -1:
+            sell_signals.append({
+                'date': date,
+                'price': row['high'] * 1.02,  # 标记在K线上方
+                'signal': -1
+            })
+
+        prev_signal = current_signal
+
+    # 添加买入信号标记 (绿色三角形▲)
+    if buy_signals:
+        fig.add_trace(
+            go.Scatter(
+                x=[s['date'] for s in buy_signals],
+                y=[s['price'] for s in buy_signals],
+                mode='markers',
+                marker=dict(
+                    symbol='triangle-up',
+                    size=15,
+                    color='#00A000',  # 绿色
+                    line=dict(width=1, color='#006400')
+                ),
+                name='买入信号',
+                text=['买入'] * len(buy_signals),
+                hovertemplate='买入信号<br>日期: %{x}<br>价格: ¥%{y:.2f}<extra></extra>'
+            ),
+            row=1, col=1
+        )
+
+    # 添加卖出信号标记 (红色三角形▼)
+    if sell_signals:
+        fig.add_trace(
+            go.Scatter(
+                x=[s['date'] for s in sell_signals],
+                y=[s['price'] for s in sell_signals],
+                mode='markers',
+                marker=dict(
+                    symbol='triangle-down',
+                    size=15,
+                    color='#FF0000',  # 红色
+                    line=dict(width=1, color='#8B0000')
+                ),
+                name='卖出信号',
+                text=['卖出'] * len(sell_signals),
+                hovertemplate='卖出信号<br>日期: %{x}<br>价格: ¥%{y:.2f}<extra></extra>'
+            ),
+            row=1, col=1
+        )
+
+    # 交易信号子图（显示-1, 0, 1信号）
+    signal_colors = []
+    for sig in signals:
+        if sig == 1:
+            signal_colors.append('#00A000')  # 绿色=买入
+        elif sig == -1:
+            signal_colors.append('#FF0000')  # 红色=卖出
+        else:
+            signal_colors.append('#E0E0E0')  # 灰色=持仓
+
+    fig.add_trace(
+        go.Bar(
+            x=df['date'],
+            y=signals,
+            marker_color=signal_colors,
+            name='信号',
+            hovertemplate='信号值: %{y}<extra></extra>'
+        ),
+        row=3, col=1
+    )
+
+    # 更新信号子图布局
+    fig.update_yaxes(range=[-1.5, 1.5], row=3, col=1)
+    fig.update_yaxes(title_text='信号', row=3, col=1)
+
+    period_names = {'D': '日K', 'W': '周K', 'M': '月K', 'Y': '年K'}
+
+    # 更新布局
+    fig.update_layout(
+        title=dict(
+            text=f'<b>{symbol}</b> {period_names.get(period, "K线")}走势（带交易信号）',
+            x=0.5,
+            font=dict(size=18)
+        ),
+        height=800,
+        showlegend=True,
+        legend=dict(
+            orientation='h',
+            yanchor='bottom',
+            y=1.02,
+            xanchor='right',
+            x=1
+        ),
+        xaxis=dict(
+            rangeslider=dict(visible=False),
+            type='category',
+            tickangle=45,
+            showgrid=True,
+            gridcolor='#E5E5E5'
+        ),
+        yaxis=dict(
+            showgrid=True,
+            gridcolor='#E5E5E5',
+            tickformat='.2f'
+        ),
+        yaxis2=dict(
+            tickformat='.0f',
+            showgrid=True,
+            gridcolor='#E5E5E5'
+        ),
+        yaxis3=dict(
+            showgrid=True,
+            gridcolor='#E5E5E5'
+        ),
+        plot_bgcolor='#FAFAFA',
+        paper_bgcolor='white',
+        margin=dict(t=80, l=60, r=40, b=60)
+    )
+
+    # 隐藏周末空白
+    if period == 'D':
+        fig.update_xaxes(
+            rangebreaks=[dict(bounds=['sat', 'mon'])]
+        )
+
+    return fig
+
+
 # Tab 1: 自选股管理（包含行情展示）
 with tab1:
     st.header("⭐ 自选股管理")
@@ -319,7 +547,7 @@ with tab1:
         
         # 添加自选股
         with st.expander("➕ 添加自选股", expanded=False):
-            new_symbol = st.text_input("股票代码", value="", placeholder="如: 000001.SZ")
+            new_symbol = st.text_input("股票代码", value="", placeholder="如: 000001.SH（上证指数）或 000001.SZ（平安银行）")
             new_name = st.text_input("股票名称", value="", placeholder="如: 平安银行")
             new_group = st.selectbox("分组", ["默认", "持仓股", "银行", "消费", "科技", "医药", "新能源", "自定义"])
             
@@ -533,7 +761,7 @@ with tab2:
         
         with col1:
             st.subheader("📊 股票选择")
-            symbol_input = st.text_input("股票代码", value="000001.SZ", placeholder="如: 000001.SZ")
+            symbol_input = st.text_input("股票代码", value="000001.SH", placeholder="如: 000001.SH（上证指数）或 000001.SZ（平安银行）")
             start_date = st.date_input("开始日期", value=pd.to_datetime("2023-01-01"))
             end_date = st.date_input("结束日期", value=pd.to_datetime("2024-12-31"))
         
@@ -837,6 +1065,19 @@ with tab2:
                     ))
                     fig.update_layout(title='权益曲线', xaxis_title='日期', yaxis_title='净值')
                     st.plotly_chart(fig, use_container_width=True)
+
+                    # 获取策略信号并绘制带信号的K线图
+                    signal_series = strategy.get_signal_series(df_with_factors)
+                    # 将信号序列与df对齐
+                    if len(signal_series) == len(df_with_factors):
+                        fig_signals = plot_kline_with_signals(df_with_factors, symbol_input, signal_series, period='D')
+                        st.plotly_chart(fig_signals, use_container_width=True)
+                    else:
+                        # 尝试重置索引
+                        signal_series = signal_series.reset_index(drop=True)
+                        if len(signal_series) == len(df_with_factors):
+                            fig_signals = plot_kline_with_signals(df_with_factors, symbol_input, signal_series, period='D')
+                            st.plotly_chart(fig_signals, use_container_width=True)
 
                     # 显示每次操作的收益率表格
                     trades = results.get('trades', [])
