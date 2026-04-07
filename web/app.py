@@ -99,14 +99,14 @@ def get_latest_quote(symbol):
         end_date = datetime.now()
         start_date = end_date - timedelta(days=30)
         df = dm.get_daily_kline(symbol, start_date.strftime("%Y-%m-%d"), end_date.strftime("%Y-%m-%d"))
-        
+
         if df.empty:
             return None
-        
+
         # 返回最近一天的数据
         latest = df.iloc[-1]
         prev = df.iloc[-2] if len(df) > 1 else latest
-        
+
         return {
             'symbol': symbol,
             'date': latest['date'],
@@ -120,16 +120,82 @@ def get_latest_quote(symbol):
     except Exception as e:
         return None
 
+
+def resample_kline(df, period='M'):
+    """
+    将日K线数据重采样为周K/月K/年K
+
+    Args:
+        df: 日K线DataFrame
+        period: 'W' 周K, 'M' 月K, 'Y' 年K
+
+    Returns:
+        重采样后的DataFrame
+    """
+    if df.empty:
+        return df
+
+    df = df.copy()
+    df['date'] = pd.to_datetime(df['date'])
+    df = df.set_index('date')
+
+    # 重采样规则
+    if period == 'W':
+        rule = 'W-FRI'  # 按周收盘（周五）
+        label_rule = 'W-FRI'
+    elif period == 'M':
+        rule = 'M'  # 按月收盘
+        label_rule = 'M'
+    elif period == 'Y':
+        rule = 'Y'  # 按年收盘
+        label_rule = 'Y'
+    else:
+        return df.reset_index()
+
+    # 重采样
+    resampled = df.resample(rule).agg({
+        'open': 'first',
+        'high': 'max',
+        'low': 'min',
+        'close': 'last',
+        'volume': 'sum',
+        'amount': 'sum',
+        'symbol': 'last'
+    })
+    resampled = resampled.dropna(subset=['open', 'high', 'low', 'close'])
+    resampled = resampled.reset_index()
+
+    # 重置symbol列
+    if 'symbol' not in resampled.columns or resampled['symbol'].isna().all():
+        resampled['symbol'] = df['symbol'].iloc[0] if 'symbol' in df.columns else ''
+
+    # 格式化日期
+    if period == 'W':
+        resampled['date'] = resampled['date'].dt.strftime('%Y-%m-%d') + ' (周线)'
+    elif period == 'M':
+        resampled['date'] = resampled['date'].dt.strftime('%Y-%m')
+    elif period == 'Y':
+        resampled['date'] = resampled['date'].dt.strftime('%Y')
+
+    return resampled
+
 # 辅助函数：绘制K线图
-def plot_kline(df, symbol):
-    """绘制专业的K线图"""
+def plot_kline(df, symbol, period='D'):
+    """
+    绘制专业的K线图
+
+    Args:
+        df: K线DataFrame
+        symbol: 股票代码
+        period: 'D' 日K, 'W' 周K, 'M' 月K, 'Y' 年K
+    """
     import plotly.graph_objects as go
     from plotly.subplots import make_subplots
-    
+
     # 计算涨跌
     df = df.copy()
     df['color'] = df.apply(lambda x: 'rise' if x['close'] >= x['open'] else 'fall', axis=1)
-    
+
     # 创建子图：K线图 + 成交量
     fig = make_subplots(
         rows=2, cols=1,
@@ -138,7 +204,7 @@ def plot_kline(df, symbol):
         row_heights=[0.7, 0.3],
         subplot_titles=('', '成交量')
     )
-    
+
     # K线 - 使用中国颜色惯例：红涨绿跌
     fig.add_trace(
         go.Candlestick(
@@ -155,45 +221,35 @@ def plot_kline(df, symbol):
         ),
         row=1, col=1
     )
-    
-    # 添加MA均线
-    if len(df) >= 5:
-        df['ma5'] = df['close'].rolling(5).mean()
-        fig.add_trace(go.Scatter(
-            x=df['date'], y=df['ma5'], 
-            name='MA5', 
-            line=dict(color='#FF6B00', width=1)
-        ), row=1, col=1)
-    
-    if len(df) >= 10:
-        df['ma10'] = df['close'].rolling(10).mean()
-        fig.add_trace(go.Scatter(
-            x=df['date'], y=df['ma10'], 
-            name='MA10', 
-            line=dict(color='#0066FF', width=1)
-        ), row=1, col=1)
-    
-    if len(df) >= 20:
-        df['ma20'] = df['close'].rolling(20).mean()
-        fig.add_trace(go.Scatter(
-            x=df['date'], y=df['ma20'], 
-            name='MA20', 
-            line=dict(color='#9900CC', width=1)
-        ), row=1, col=1)
-    
-    if len(df) >= 60:
-        df['ma60'] = df['close'].rolling(60).mean()
-        fig.add_trace(go.Scatter(
-            x=df['date'], y=df['ma60'], 
-            name='MA60', 
-            line=dict(color='#666666', width=1, dash='dash')
-        ), row=1, col=1)
-    
+
+    # 添加MA均线（根据周期调整参数）
+    if period == 'D':  # 日K
+        ma_periods = [5, 10, 20, 60]
+        ma_labels = ['MA5', 'MA10', 'MA20', 'MA60']
+    elif period == 'W':  # 周K
+        ma_periods = [5, 10, 20]
+        ma_labels = ['MA5', 'MA10', 'MA20']
+    elif period == 'M':  # 月K
+        ma_periods = [3, 6, 12]
+        ma_labels = ['MA3', 'MA6', 'MA12']
+    elif period == 'Y':  # 年K
+        ma_periods = [3, 5]
+        ma_labels = ['MA3', 'MA5']
+
+    for ma_period, ma_label in zip(ma_periods, ma_labels):
+        if len(df) >= ma_period:
+            df[f'ma{ma_period}'] = df['close'].rolling(ma_period).mean()
+            fig.add_trace(go.Scatter(
+                x=df['date'], y=df[f'ma{ma_period}'],
+                name=ma_label,
+                line=dict(width=1.5)
+            ), row=1, col=1)
+
     # 成交量柱状图
     colors = ['#FF0000' if c >= o else '#00A000' for c, o in zip(df['close'], df['open'])]
     fig.add_trace(
         go.Bar(
-            x=df['date'], 
+            x=df['date'],
             y=df['volume'],
             marker_color=colors,
             name='成交量',
@@ -201,19 +257,14 @@ def plot_kline(df, symbol):
         ),
         row=2, col=1
     )
-    
-    # 格式化成交额
-    def format_volume(v):
-        if v >= 1e8:
-            return f'{v/1e8:.1f}亿'
-        elif v >= 1e4:
-            return f'{v/1e4:.0f}万'
-        return f'{v:.0f}'
-    
+
+    # 周期标题
+    period_names = {'D': '日K', 'W': '周K', 'M': '月K', 'Y': '年K'}
+
     # 更新布局
     fig.update_layout(
         title=dict(
-            text=f'<b>{symbol}</b> K线走势',
+            text=f'<b>{symbol}</b> {period_names.get(period, "K线")}走势',
             x=0.5,
             font=dict(size=18)
         ),
@@ -247,12 +298,13 @@ def plot_kline(df, symbol):
         paper_bgcolor='white',
         margin=dict(t=80, l=60, r=40, b=60)
     )
-    
-    # 隐藏周末空白
-    fig.update_xaxes(
-        rangebreaks=[dict(bounds=['sat', 'mon'])]
-    )
-    
+
+    # 隐藏周末空白（仅日K需要）
+    if period == 'D':
+        fig.update_xaxes(
+            rangebreaks=[dict(bounds=['sat', 'mon'])]
+        )
+
     return fig
 
 # Tab 1: 自选股管理（包含行情展示）
@@ -404,9 +456,28 @@ with tab1:
                     st.markdown(f"<div class='metric-value'>{latest['amount']/100000000:.2f}亿</div>", unsafe_allow_html=True)
                 
                 st.divider()
-                
+
+                # K线周期选择
+                kline_period = st.radio(
+                    "K线周期",
+                    ["日K", "周K", "月K", "年K"],
+                    horizontal=True,
+                    index=0,
+                    key="kline_period_selector"
+                )
+
+                # 根据选择的周期处理数据
+                period_map = {"日K": "D", "周K": "W", "月K": "M", "年K": "Y"}
+                period_code = period_map[kline_period]
+
+                # 如果不是日K，需要重采样
+                if period_code != "D":
+                    df_display = resample_kline(df, period_code)
+                else:
+                    df_display = df.copy()
+
                 # 显示K线图
-                fig = plot_kline(df, selected_stock)
+                fig = plot_kline(df_display, selected_stock, period=period_code)
                 st.plotly_chart(fig, use_container_width=True)
                 
                 # 显示数据表格
