@@ -417,41 +417,45 @@ def plot_kline_with_signals(df, symbol, signals, period='D'):
 
         prev_signal = current_signal
 
-    # 添加买入信号标记 (绿色三角形▲)
+    # 添加买入信号标记 (红色三角形▲) - 中国市场红色=涨=买入
     if buy_signals:
         fig.add_trace(
             go.Scatter(
                 x=[s['date'] for s in buy_signals],
                 y=[s['price'] for s in buy_signals],
-                mode='markers',
+                mode='markers+text',
                 marker=dict(
                     symbol='triangle-up',
-                    size=15,
-                    color='#00A000',  # 绿色
-                    line=dict(width=1, color='#006400')
+                    size=18,
+                    color='#FF0000',  # 红色=买入
+                    line=dict(width=2, color='#8B0000')
                 ),
+                text=['▲'] * len(buy_signals),
+                textposition='bottom center',
+                textfont=dict(color='#FF0000', size=12),
                 name='买入信号',
-                text=['买入'] * len(buy_signals),
                 hovertemplate='买入信号<br>日期: %{x}<br>价格: ¥%{y:.2f}<extra></extra>'
             ),
             row=1, col=1
         )
 
-    # 添加卖出信号标记 (红色三角形▼)
+    # 添加卖出信号标记 (绿色三角形▼) - 中国市场绿色=跌=卖出
     if sell_signals:
         fig.add_trace(
             go.Scatter(
                 x=[s['date'] for s in sell_signals],
                 y=[s['price'] for s in sell_signals],
-                mode='markers',
+                mode='markers+text',
                 marker=dict(
                     symbol='triangle-down',
-                    size=15,
-                    color='#FF0000',  # 红色
-                    line=dict(width=1, color='#8B0000')
+                    size=18,
+                    color='#00A000',  # 绿色=卖出
+                    line=dict(width=2, color='#006400')
                 ),
+                text=['▼'] * len(sell_signals),
+                textposition='top center',
+                textfont=dict(color='#00A000', size=12),
                 name='卖出信号',
-                text=['卖出'] * len(sell_signals),
                 hovertemplate='卖出信号<br>日期: %{x}<br>价格: ¥%{y:.2f}<extra></extra>'
             ),
             row=1, col=1
@@ -533,6 +537,204 @@ def plot_kline_with_signals(df, symbol, signals, period='D'):
         )
 
     return fig
+
+
+def plot_signals_only(df, symbol, signals):
+    """
+    简洁的交易信号柱状图
+    横轴：日期，纵轴：-1（卖出）/ 0（持仓）/ 1（买入）
+
+    Args:
+        df: K线DataFrame
+        symbol: 股票代码
+        signals: 信号序列 (1=买入, -1=卖出, 0=持仓)
+    """
+    import plotly.graph_objects as go
+
+    df = df.copy()
+
+    if len(signals) != len(df):
+        signals = signals[:len(df)]
+
+    # 颜色：中国市场惯例 - 红涨(买)绿跌(卖)
+    colors = ['#FF0000' if s == 1 else '#00A000' if s == -1 else '#CCCCCC' for s in signals]
+
+    fig = go.Figure()
+    fig.add_trace(go.Bar(
+        x=df['date'],
+        y=signals,
+        marker_color=colors,
+        hovertemplate='日期: %{x}<br>信号: %{y}<extra></extra>'
+    ))
+
+    # 参考线
+    fig.add_hline(y=1, line_dash='dot', line_color='#FF0000', annotation_text='买入', annotation_position='top right')
+    fig.add_hline(y=-1, line_dash='dot', line_color='#00A000', annotation_text='卖出', annotation_position='bottom right')
+    fig.add_hline(y=0, line_dash='dash', line_color='gray')
+
+    fig.update_layout(
+        title=f'<b>{symbol}</b> 交易信号',
+        height=250,
+        showlegend=False,
+        xaxis=dict(
+            type='category',
+            tickangle=45,
+            showgrid=False,
+            title='日期'
+        ),
+        yaxis=dict(
+            showgrid=True,
+            gridcolor='#E5E5E5',
+            range=[-1.5, 1.5],
+            tickvals=[-1, 0, 1],
+            title='信号'
+        ),
+        plot_bgcolor='white',
+        margin=dict(t=40, l=50, r=30, b=60)
+    )
+
+    fig.update_xaxes(rangebreaks=[dict(bounds=['sat', 'mon'])])
+    return fig
+
+
+def plot_multi_stock_signals(stock_data, signals, symbols):
+    """
+    多股票信号子图 - 每只股票一行，简洁展示
+
+    Args:
+        stock_data: dict, {symbol: df}
+        signals: dict, {symbol: signal_series}
+        symbols: list, 股票代码列表
+    """
+    import plotly.graph_objects as go
+    from plotly.subplots import make_subplots
+
+    n = min(len(symbols), 6)
+    if n == 0:
+        return None
+
+    symbols = list(symbols)[:n]
+
+    fig = make_subplots(
+        rows=n, cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.06,
+        subplot_titles=symbols,
+        row_heights=[1/n] * n
+    )
+
+    for i, sym in enumerate(symbols, 1):
+        if sym not in signals or sym not in stock_data:
+            continue
+
+        sig = signals[sym]
+        df = stock_data[sym]
+
+        if len(sig) != len(df):
+            sig = sig[:len(df)]
+
+        colors = ['#FF0000' if s == 1 else '#00A000' if s == -1 else '#CCCCCC' for s in sig]
+
+        fig.add_trace(go.Bar(
+            x=df['date'],
+            y=sig,
+            marker_color=colors,
+            hovertemplate=f'{sym}<br>%{{x}}<br>信号: %{{y}}<extra></extra>'
+        ), row=i, col=1)
+
+        fig.update_yaxes(range=[-1.5, 1.5], tickvals=[-1, 0, 1], row=i, col=1)
+
+    fig.update_layout(
+        title='<b>多股票信号图</b> (红=买入, 绿=卖出)',
+        height=max(300, 120 * n),
+        showlegend=False,
+        plot_bgcolor='white',
+        margin=dict(t=40, l=50, r=30, b=60)
+    )
+
+    fig.update_xaxes(rangebreaks=[dict(bounds=['sat', 'mon'])], tickangle=45)
+    return fig
+
+
+def plot_signals_heatmap(signals, symbols, dates):
+    """
+    多股票信号热力图 - 日期×股票的信号强度矩阵
+
+    Args:
+        signals: dict, {symbol: signal_series}
+        symbols: list, 股票代码列表
+        dates: list, 日期列表
+    """
+    import plotly.graph_objects as go
+    import numpy as np
+
+    if not symbols or not dates:
+        return None
+
+    # 构建矩阵
+    matrix = []
+    for date in dates:
+        row = []
+        for sym in symbols:
+            if sym in signals:
+                sig = signals[sym]
+                val = 0
+                for i, d in enumerate(sig.index if hasattr(sig, 'index') else range(len(sig))):
+                    d_str = str(d)[:10]
+                    if d_str == str(date)[:10]:
+                        val = sig.iloc[i] if hasattr(sig, 'iloc') else sig[i]
+                        break
+                row.append(val)
+            else:
+                row.append(0)
+        matrix.append(row)
+
+    fig = go.Figure(data=go.Heatmap(
+        z=np.array(matrix),
+        x=list(symbols),
+        y=[str(d)[:10] for d in dates],
+        colorscale=[[0, '#00A000'], [0.5, '#E0E0E0'], [1, '#FF0000']],
+        zmid=0,
+        colorbar=dict(title='信号', tickvals=[-1, 0, 1], ticktext=['卖', '持仓', '买']),
+        hovertemplate='%{y}<br>%{x}<br>信号: %{z}<extra></extra>'
+    ))
+
+    fig.update_layout(
+        title='<b>信号热力图</b> (红=买入, 绿=卖出)',
+        height=max(300, 20 * len(dates)),
+        margin=dict(t=40, l=100, r=30, b=80)
+    )
+
+    return fig
+
+
+def export_signals_to_csv(signals, symbols, output_path='signals_export.csv'):
+    """
+    导出信号数据到CSV文件
+
+    Args:
+        signals: dict, {symbol: signal_series}
+        symbols: list, 股票代码列表
+        output_path: str, 输出文件路径
+    """
+    import pandas as pd
+
+    records = []
+    for sym in symbols:
+        if sym not in signals:
+            continue
+        sig = signals[sym]
+        for i, (date, val) in enumerate(sig.items() if hasattr(sig, 'items') else enumerate(sig)):
+            records.append({
+                '股票代码': sym,
+                '日期': str(date)[:10],
+                '信号': val,
+                '信号描述': '买入' if val == 1 else ('卖出' if val == -1 else '持仓')
+            })
+
+    df = pd.DataFrame(records)
+    df.to_csv(output_path, index=False, encoding='utf-8-sig')
+    return output_path
 
 
 # Tab 1: 自选股管理（包含行情展示）
@@ -754,24 +956,61 @@ with tab1:
 # Tab 2: 策略回测
 with tab2:
     st.header("🎯 策略回测")
-    
+
     # 回测参数设置（移到主区域）
     with st.expander("⚙️ 回测参数设置", expanded=True):
         col1, col2, col3 = st.columns(3)
-        
+
         with col1:
-            st.subheader("📊 股票选择")
-            symbol_input = st.text_input("股票代码", value="000001.SH", placeholder="如: 000001.SH（上证指数）或 000001.SZ（平安银行）")
+            st.subheader("📊 股票选择（勾选参与回测）")
+
+            # 获取自选股列表
+            all_watchlist_stocks = wl_manager.get_all_stocks()
+
+            if all_watchlist_stocks:
+                # 初始化session_state中的选中状态
+                if 'backtest_selected_stocks' not in st.session_state:
+                    st.session_state['backtest_selected_stocks'] = {s.symbol for s in all_watchlist_stocks}
+
+                # 全选/取消全选
+                col_sel_all, col_count = st.columns([1, 3])
+                with col_sel_all:
+                    select_all = st.checkbox("全选", value=True, key="select_all_stocks")
+                with col_count:
+                    st.caption(f"已选 {len(st.session_state['backtest_selected_stocks'])} 只")
+
+                # 复选框列表选择股票
+                selected_stocks = set()
+                for stock in all_watchlist_stocks:
+                    is_selected = st.checkbox(
+                        f"{stock.symbol} {stock.name}",
+                        value=stock.symbol in st.session_state['backtest_selected_stocks'],
+                        key=f"stock_cb_{stock.symbol}"
+                    )
+                    if is_selected:
+                        selected_stocks.add(stock.symbol)
+
+                # 更新session_state
+                st.session_state['backtest_selected_stocks'] = selected_stocks
+
+                # 显示选中的股票代码列表
+                if selected_stocks:
+                    st.success(f"✅ 选中了 {len(selected_stocks)} 只股票: {', '.join(sorted(selected_stocks))}")
+                else:
+                    st.warning("⚠️ 请至少选择一只股票")
+            else:
+                st.info("暂无自选股，请先在【自选股管理】中添加")
+
             start_date = st.date_input("开始日期", value=pd.to_datetime("2023-01-01"))
             end_date = st.date_input("结束日期", value=pd.to_datetime("2024-12-31"))
-        
+
         with col2:
             st.subheader("🎯 策略选择")
             strategy_name = st.selectbox(
                 "选择策略",
                 ["均线交叉 (MA Cross)", "MACD", "布林带 (Bollinger Bands)", "RSI", "多因子 (Multi-Factor)"]
             )
-            
+
             # 策略参数
             if strategy_name == "均线交叉 (MA Cross)":
                 fast_period = st.slider("短期均线", 5, 60, 20)
@@ -793,229 +1032,103 @@ with tab2:
                 strategy_params = {'period': period, 'oversold': oversold, 'overbought': overbought}
             else:
                 strategy_params = {}
-        
+
         with col3:
             st.subheader("💰 资金参数")
             initial_capital = st.number_input("初始资金", value=1000000, step=100000)
             commission_rate = st.number_input(
-                "手续费率", 
-                value=0.0003, 
-                min_value=0.0001, 
-                max_value=0.005, 
+                "手续费率",
+                value=0.0003,
+                min_value=0.0001,
+                max_value=0.005,
                 step=0.0001,
                 format="%.4f"
             )
-    
-    # 多股票/单股票切换
-    backtest_mode = st.radio(
-        "回测模式",
-        ["单股票回测", "多股票回测"],
-        horizontal=True,
-        index=0
-    )
-    
-    # 多股票选项
-    if backtest_mode == "多股票回测":
-        st.info("💡 多股票回测将使用自选股列表中的股票进行组合投资回测")
-        
-        # 检查是否有选中的自选股
-        if 'multi_stock_symbols' in st.session_state and st.session_state['multi_stock_symbols']:
-            symbols = st.session_state['multi_stock_symbols']
-            st.success(f"✅ 已加载 {len(symbols)} 只自选股: {', '.join(symbols)}")
-        else:
-            st.warning("⚠️ 请先在【自选股管理】标签页中选择股票并导出")
-        
-        # 多股票回测参数
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            max_positions = st.number_input("最大持仓数", value=5, min_value=1, max_value=20)
-        with col2:
-            rebalance_days = st.number_input("调仓周期(天)", value=5, min_value=1, max_value=30)
-        with col3:
-            position_method = st.selectbox(
-                "仓位分配方法",
-                ["equal", "risk_parity", "momentum", "score", "kelly"],
-                index=0,
-                format_func=lambda x: {
-                    "equal": "等权重",
-                    "risk_parity": "风险平价",
-                    "momentum": "动量加权",
-                    "score": "综合打分",
-                    "kelly": "凯利公式"
-                }[x]
-            )
-        
-        col4, col5 = st.columns(2)
-        with col4:
-            max_single = st.slider("单只最大仓位", 0, 20, 20, 1, format="%.0f%%") / 100
-        with col5:
-            max_total = st.slider("最大总仓位", 0, 100, 80, 5, format="%.0f%%") / 100
-    
-    if st.button("🚀 运行回测", key="run_backtest", type="primary"):
-        if backtest_mode == "多股票回测":
-            # 多股票回测逻辑...
-            if 'multi_stock_symbols' not in st.session_state or not st.session_state['multi_stock_symbols']:
-                st.warning("请先在【自选股管理】标签页中选择股票")
+
+            # 多股票参数（选中多只时显示）
+            if 'backtest_selected_stocks' in st.session_state and len(st.session_state['backtest_selected_stocks']) > 1:
+                st.divider()
+                st.subheader("📈 组合参数")
+                max_positions = st.number_input("最大持仓数", value=5, min_value=1, max_value=20)
+                rebalance_days = st.number_input("调仓周期(天)", value=5, min_value=1, max_value=30)
+                position_method = st.selectbox(
+                    "仓位分配方法",
+                    ["equal", "risk_parity", "momentum", "score", "kelly"],
+                    index=0,
+                    format_func=lambda x: {
+                        "equal": "等权重",
+                        "risk_parity": "风险平价",
+                        "momentum": "动量加权",
+                        "score": "综合打分",
+                        "kelly": "凯利公式"
+                    }[x]
+                )
+
+                col4, col5 = st.columns(2)
+                with col4:
+                    max_single = st.slider("单只最大仓位", 0, 20, 20, 1, format="%.0f%%") / 100
+                with col5:
+                    max_total = st.slider("最大总仓位", 0, 100, 80, 5, format="%.0f%%") / 100
             else:
-                with st.spinner("正在运行多股票回测..."):
-                    symbols = st.session_state['multi_stock_symbols']
-                    
-                    # 获取数据并生成信号
-                    stock_data = {}
-                    signals = {}
-                    
-                    for sym in symbols:
-                        df = dm.get_daily_kline(sym, start_date.strftime("%Y-%m-%d"), end_date.strftime("%Y-%m-%d"))
-                        if not df.empty:
-                            stock_data[sym] = df
-                            
-                            # 生成信号
-                            try:
-                                factor_data = FactorData(df)
-                                df_with_factors = factor_data.calculate_all_factors()
-                                
-                                if strategy_name == "均线交叉 (MA Cross)":
-                                    strat = MovingAverageCrossStrategy(strategy_params)
-                                elif strategy_name == "MACD":
-                                    strat = MACDStrategy(strategy_params)
-                                elif strategy_name == "布林带 (Bollinger Bands)":
-                                    strat = BollingerBandsStrategy(strategy_params)
-                                elif strategy_name == "RSI":
-                                    strat = RSIStrategy(strategy_params)
-                                else:
-                                    strat = MultiFactorStrategy(strategy_params)
-                                
-                                signal_series = strat.get_signal_series(df_with_factors)
-                                # 关键：设置信号索引为日期
-                                if 'date' in df.columns:
-                                    signal_series.index = pd.to_datetime(df['date'])
-                                signals[sym] = signal_series
-                            except Exception as e:
-                                st.warning(f"{sym} 信号计算失败: {e}")
-                    
-                    if len(stock_data) == 0:
-                        st.error("所有股票都没有获取到数据!")
-                    else:
-                        # 运行多股票回测
-                        engine = MultiStockBacktest(
-                            initial_capital=initial_capital,
-                            commission_rate=commission_rate,
-                            max_positions=max_positions,
-                            rebalance_days=rebalance_days,
-                            position_method=position_method,
-                            max_single_position=max_single,
-                            max_total_position=max_total
-                        )
-                        
-                        engine.set_data(stock_data, signals)
-                        results = engine.run(
-                            start_date.strftime("%Y-%m-%d"),
-                            end_date.strftime("%Y-%m-%d")
-                        )
-                        
-                        st.session_state['multi_backtest_results'] = results
-                        
-                        st.success(f"✅ 多股票回测完成! 共回测 {len(stock_data)} 只股票")
-                        
-                        # 显示结果
-                        if results:
-                            col1, col2, col3, col4 = st.columns(4)
-                            with col1:
-                                st.metric("总收益率", f"{results['total_return']:.2%}")
-                            with col2:
-                                st.metric("年化收益率", f"{results['annual_return']:.2%}")
-                            with col3:
-                                st.metric("夏普比率", f"{results['sharpe_ratio']:.2f}")
-                            with col4:
-                                st.metric("最大回撤", f"{results['max_drawdown']:.2%}")
-                            
-                            # 显示权益曲线
-                            equity_df = results.get('equity_curve')
-                            if equity_df is not None and not equity_df.empty:
-                                fig = go.Figure()
-                                fig.add_trace(go.Scatter(
-                                    x=equity_df['date'],
-                                    y=equity_df['total_value'],
-                                    name='组合净值',
-                                    line=dict(color='blue')
-                                ))
-                                fig.update_layout(
-                                    title='多股票组合权益曲线',
-                                    xaxis_title='日期',
-                                    yaxis_title='净值',
-                                    height=400
-                                )
-                                st.plotly_chart(fig, use_container_width=True)
+                max_positions = 1
+                rebalance_days = 5
+                position_method = "equal"
+                max_single = 0.2
+                max_total = 0.8
 
-                            # 显示完整的每次操作收益率表格
-                            trade_details_df = engine.get_trade_details_df()
-                            if not trade_details_df.empty:
-                                st.subheader("📋 每次操作收益率明细")
+    # 运行回测按钮
+    if st.button("🚀 运行回测", key="run_backtest", type="primary"):
+        selected_stocks = st.session_state.get('backtest_selected_stocks', set())
 
-                                # 统计信息
-                                closed_trades = [td for td in engine.trade_details if td.status == 'closed']
-                                open_trades = [td for td in engine.trade_details if td.status == 'open']
-
-                                stat_col1, stat_col2, stat_col3, stat_col4 = st.columns(4)
-                                with stat_col1:
-                                    st.metric("总交易次数", len(engine.trade_details))
-                                with stat_col2:
-                                    st.metric("已完成交易", len(closed_trades))
-                                with stat_col3:
-                                    st.metric("持有中", len(open_trades))
-                                with stat_col4:
-                                    if closed_trades:
-                                        win_count = len([t for t in closed_trades if t.net_return_rate > 0])
-                                        win_rate = win_count / len(closed_trades)
-                                        st.metric("胜率", f"{win_rate:.2%}")
-                                    else:
-                                        st.metric("胜率", "—")
-
-                                # 使用样式突出显示
-                                def highlight_return_market(val):
-                                    if isinstance(val, str) and '%' in val:
-                                        try:
-                                            num = float(val.replace('%', '').replace('¥', '').replace(',', '').replace('+', ''))
-                                            if num > 0:
-                                                return 'color: #dc3545'  # 红色涨
-                                            elif num < 0:
-                                                return 'color: #28a745'  # 绿色跌
-                                        except:
-                                            pass
-                                    return ''
-
-                                # 显示完整交易记录表格
-                                st.dataframe(
-                                    trade_details_df,
-                                    use_container_width=True,
-                                    hide_index=True
-                                )
-
-                                # 如果有持仓中的股票，显示详细信息
-                                if open_trades:
-                                    st.markdown("**📌 持仓明细（持有中）:**")
-                                    for td in open_trades:
-                                        st.markdown(
-                                            f"- {td.symbol}: 买入日期 {str(td.entry_date)[:10]}, "
-                                            f"价格 ¥{td.entry_price:.2f}, 数量 {td.entry_quantity}股, "
-                                            f"当前价 ¥{td.exit_price:.2f}, "
-                                            f"持有 {td.holding_days}天, "
-                                            f"浮动盈亏 ¥{td.profit:+,.2f} ({td.return_rate:+.2%})"
-                                        )
-                            else:
-                                st.info("本次回测无交易记录")
+        if not selected_stocks:
+            st.warning("请至少选择一只股票进行回测")
         else:
-            # 单股票回测
-            with st.spinner("正在运行回测..."):
-                df = dm.get_daily_kline(symbol_input, start_date.strftime("%Y-%m-%d"), end_date.strftime("%Y-%m-%d"))
-                
-                if df.empty:
-                    st.error(f"无法获取 {symbol_input} 的数据")
-                else:
-                    # 计算因子
-                    factor_data = FactorData(df)
-                    df_with_factors = factor_data.calculate_all_factors()
-                    
+            # 根据选中数量决定回测模式
+            is_single_stock = len(selected_stocks) == 1
+            symbols = list(selected_stocks)
+
+            with st.spinner(f"正在运行{'单股票' if is_single_stock else '多股票'}回测..."):
+                # 获取数据并生成信号
+                stock_data = {}
+                signals = {}
+
+                for sym in symbols:
+                    df = dm.get_daily_kline(sym, start_date.strftime("%Y-%m-%d"), end_date.strftime("%Y-%m-%d"))
+                    if not df.empty:
+                        stock_data[sym] = df
+
+                        # 生成信号
+                        try:
+                            factor_data = FactorData(df)
+                            df_with_factors = factor_data.calculate_all_factors()
+
+                            if strategy_name == "均线交叉 (MA Cross)":
+                                strat = MovingAverageCrossStrategy(strategy_params)
+                            elif strategy_name == "MACD":
+                                strat = MACDStrategy(strategy_params)
+                            elif strategy_name == "布林带 (Bollinger Bands)":
+                                strat = BollingerBandsStrategy(strategy_params)
+                            elif strategy_name == "RSI":
+                                strat = RSIStrategy(strategy_params)
+                            else:
+                                strat = MultiFactorStrategy(strategy_params)
+
+                            signal_series = strat.get_signal_series(df_with_factors)
+                            # 关键：设置信号索引为日期
+                            if 'date' in df.columns:
+                                signal_series.index = pd.to_datetime(df['date'])
+                            signals[sym] = signal_series
+                        except Exception as e:
+                            st.warning(f"{sym} 信号计算失败: {e}")
+
+                if len(stock_data) == 0:
+                    st.error("所有股票都没有获取到数据!")
+                elif is_single_stock:
+                    # ==================== 单股票回测 ====================
+                    sym = symbols[0]
+                    df = stock_data[sym]
+                    df_with_factors = FactorData(df).calculate_all_factors()
+
                     # 创建策略
                     if strategy_name == "均线交叉 (MA Cross)":
                         strategy = MovingAverageCrossStrategy(strategy_params)
@@ -1027,7 +1140,7 @@ with tab2:
                         strategy = RSIStrategy(strategy_params)
                     else:
                         strategy = MultiFactorStrategy(strategy_params)
-                    
+
                     # 运行回测
                     engine = VectorizedBacktest(
                         initial_capital=initial_capital,
@@ -1037,7 +1150,7 @@ with tab2:
                         price_data=df_with_factors,
                         signal_series=strategy.get_signal_series(df_with_factors)
                     )
-                    
+
                     # 显示结果
                     col1, col2, col3, col4 = st.columns(4)
                     with col1:
@@ -1048,7 +1161,7 @@ with tab2:
                         st.metric("夏普比率", f"{results['sharpe_ratio']:.2f}")
                     with col4:
                         st.metric("最大回撤", f"{results['max_drawdown']:.2%}")
-                    
+
                     # 绘制权益曲线
                     equity_df = results['equity_curve'].copy()
                     # 确保有date列
@@ -1066,17 +1179,17 @@ with tab2:
                     fig.update_layout(title='权益曲线', xaxis_title='日期', yaxis_title='净值')
                     st.plotly_chart(fig, use_container_width=True)
 
-                    # 获取策略信号并绘制带信号的K线图
+                    # 获取策略信号并绘制信号图
                     signal_series = strategy.get_signal_series(df_with_factors)
                     # 将信号序列与df对齐
                     if len(signal_series) == len(df_with_factors):
-                        fig_signals = plot_kline_with_signals(df_with_factors, symbol_input, signal_series, period='D')
+                        fig_signals = plot_signals_only(df_with_factors, sym, signal_series)
                         st.plotly_chart(fig_signals, use_container_width=True)
                     else:
                         # 尝试重置索引
                         signal_series = signal_series.reset_index(drop=True)
                         if len(signal_series) == len(df_with_factors):
-                            fig_signals = plot_kline_with_signals(df_with_factors, symbol_input, signal_series, period='D')
+                            fig_signals = plot_signals_only(df_with_factors, sym, signal_series)
                             st.plotly_chart(fig_signals, use_container_width=True)
 
                     # 显示每次操作的收益率表格
@@ -1120,20 +1233,6 @@ with tab2:
 
                         trades_df = pd.DataFrame(trade_records)
 
-                        # 使用样式突出显示
-                        def highlight_return(val):
-                            if isinstance(val, str) and '%' in val:
-                                try:
-                                    num = float(val.replace('%', '').replace('¥', '').replace(',', ''))
-                                    if '%' in val and '¥' not in val:
-                                        if num > 0:
-                                            return 'color: #dc3545'  # 红色涨
-                                        elif num < 0:
-                                            return 'color: #28a745'  # 绿色跌
-                                except:
-                                    pass
-                            return ''
-
                         # 显示统计信息
                         closed_trades = [t for t in trades if t['status'] == 'closed']
                         open_trades = [t for t in trades if t['status'] == 'open']
@@ -1174,6 +1273,133 @@ with tab2:
                                 )
                     else:
                         st.info("本次回测无交易记录")
+
+                else:
+                    # ==================== 多股票回测 ====================
+                    # 运行多股票回测
+                    engine = MultiStockBacktest(
+                        initial_capital=initial_capital,
+                        commission_rate=commission_rate,
+                        max_positions=max_positions,
+                        rebalance_days=rebalance_days,
+                        position_method=position_method,
+                        max_single_position=max_single,
+                        max_total_position=max_total
+                    )
+
+                    engine.set_data(stock_data, signals)
+                    results = engine.run(
+                        start_date.strftime("%Y-%m-%d"),
+                        end_date.strftime("%Y-%m-%d")
+                    )
+
+                    st.session_state['multi_backtest_results'] = results
+
+                    st.success(f"✅ 多股票回测完成! 共回测 {len(stock_data)} 只股票")
+
+                    # 显示结果
+                    if results:
+                        col1, col2, col3, col4 = st.columns(4)
+                        with col1:
+                            st.metric("总收益率", f"{results['total_return']:.2%}")
+                        with col2:
+                            st.metric("年化收益率", f"{results['annual_return']:.2%}")
+                        with col3:
+                            st.metric("夏普比率", f"{results['sharpe_ratio']:.2f}")
+                        with col4:
+                            st.metric("最大回撤", f"{results['max_drawdown']:.2%}")
+
+                        # 显示权益曲线
+                        equity_df = results.get('equity_curve')
+                        if equity_df is not None and not equity_df.empty:
+                            fig = go.Figure()
+                            fig.add_trace(go.Scatter(
+                                x=equity_df['date'],
+                                y=equity_df['total_value'],
+                                name='组合净值',
+                                line=dict(color='blue')
+                            ))
+                            fig.update_layout(
+                                title='多股票组合权益曲线',
+                                xaxis_title='日期',
+                                yaxis_title='净值',
+                                height=400
+                            )
+                            st.plotly_chart(fig, use_container_width=True)
+
+                        # 多股票信号图选项
+                        signal_chart_type = st.radio(
+                            "📈 信号图展示方式",
+                            ["子图分股票展示", "热力图展示", "不显示信号图"],
+                            horizontal=True,
+                            key="signal_chart_type"
+                        )
+
+                        if signal_chart_type != "不显示信号图":
+                            if signal_chart_type == "子图分股票展示":
+                                fig_signals = plot_multi_stock_signals(stock_data, signals, list(stock_data.keys()))
+                                if fig_signals:
+                                    st.plotly_chart(fig_signals, use_container_width=True)
+                            else:
+                                # 获取公共日期范围
+                                all_dates = equity_df['date'].tolist() if equity_df is not None and not equity_df.empty else []
+                                fig_heatmap = plot_signals_heatmap(signals, list(stock_data.keys()), all_dates)
+                                if fig_heatmap:
+                                    st.plotly_chart(fig_heatmap, use_container_width=True)
+
+                        # 导出信号数据
+                        if st.button("📥 导出信号数据到CSV"):
+                            try:
+                                output_path = f"multi_stock_signals_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+                                export_signals_to_csv(signals, list(stock_data.keys()), output_path)
+                                st.success(f"✅ 信号数据已导出到: {output_path}")
+                            except Exception as e:
+                                st.error(f"导出失败: {e}")
+
+                        # 显示完整的每次操作收益率表格
+                        trade_details_df = engine.get_trade_details_df()
+                        if not trade_details_df.empty:
+                            st.subheader("📋 每次操作收益率明细")
+
+                            # 统计信息
+                            closed_trades = [td for td in engine.trade_details if td.status == 'closed']
+                            open_trades = [td for td in engine.trade_details if td.status == 'open']
+
+                            stat_col1, stat_col2, stat_col3, stat_col4 = st.columns(4)
+                            with stat_col1:
+                                st.metric("总交易次数", len(engine.trade_details))
+                            with stat_col2:
+                                st.metric("已完成交易", len(closed_trades))
+                            with stat_col3:
+                                st.metric("持有中", len(open_trades))
+                            with stat_col4:
+                                if closed_trades:
+                                    win_count = len([t for t in closed_trades if t.net_return_rate > 0])
+                                    win_rate = win_count / len(closed_trades)
+                                    st.metric("胜率", f"{win_rate:.2%}")
+                                else:
+                                    st.metric("胜率", "—")
+
+                            # 显示完整交易记录表格
+                            st.dataframe(
+                                trade_details_df,
+                                use_container_width=True,
+                                hide_index=True
+                            )
+
+                            # 如果有持仓中的股票，显示详细信息
+                            if open_trades:
+                                st.markdown("**📌 持仓明细（持有中）:**")
+                                for td in open_trades:
+                                    st.markdown(
+                                        f"- {td.symbol}: 买入日期 {str(td.entry_date)[:10]}, "
+                                        f"价格 ¥{td.entry_price:.2f}, 数量 {td.entry_quantity}股, "
+                                        f"当前价 ¥{td.exit_price:.2f}, "
+                                        f"持有 {td.holding_days}天, "
+                                        f"浮动盈亏 ¥{td.profit:+,.2f} ({td.return_rate:+.2%})"
+                                    )
+                        else:
+                            st.info("本次回测无交易记录")
 
 # Tab 3: 绩效分析
 with tab3:
