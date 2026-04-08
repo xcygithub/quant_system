@@ -112,6 +112,8 @@ class PositionSizer:
 
         # 分配资金
         results = []
+        zero_share_indices = []  # 记录因金额不足而无法买入的股票索引
+
         for i, (symbol, score, volatility) in enumerate(candidates):
             weight = weights[i]
             amount = total_capital * weight
@@ -121,6 +123,10 @@ class PositionSizer:
             if price > 0:
                 shares = int(amount / price / 100) * 100
                 shares = max(shares, 0)  # 确保非负
+                # 检查是否因金额不足而无法购买100股
+                if shares == 0 and amount < price * 100:
+                    # 金额不足以购买100股，记录索引
+                    zero_share_indices.append(i)
             else:
                 shares = 0
                 amount = 0
@@ -132,6 +138,35 @@ class PositionSizer:
                 amount=shares * price if price > 0 else 0,
                 score=score
             ))
+
+        # 处理因金额不足无法购买100股的股票：将她们的权重重新分配给其他股票
+        if zero_share_indices and len(results) > len(zero_share_indices):
+            # 计算释放的权重总和
+            released_weight = sum(results[i].weight for i in zero_share_indices)
+            released_amount = sum(results[i].amount for i in zero_share_indices)
+
+            # 清零这些无法买入的股票的权重和金额
+            for i in zero_share_indices:
+                results[i].weight = 0
+                results[i].amount = 0
+
+            # 计算剩余可分配的股票
+            remaining_indices = [i for i in range(len(results)) if i not in zero_share_indices and results[i].shares > 0]
+            if remaining_indices and released_weight > 0:
+                # 按权重比例将释放的权重加给其他股票
+                remaining_total_weight = sum(results[i].weight for i in remaining_indices)
+                for i in remaining_indices:
+                    if remaining_total_weight > 0:
+                        # 这只股票额外获得的权重比例
+                        extra_ratio = results[i].weight / remaining_total_weight
+                        extra_weight = released_weight * extra_ratio
+                        results[i].weight += extra_weight
+                        # 重新计算金额和股数
+                        extra_amount = total_capital * extra_weight
+                        results[i].amount += extra_amount
+                        extra_shares = int(extra_amount / prices.get(results[i].symbol, 0) / 100) * 100
+                        if extra_shares > 0:
+                            results[i].shares += extra_shares
 
         return results
 

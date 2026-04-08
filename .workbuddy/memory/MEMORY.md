@@ -3,12 +3,13 @@
 ## 项目概述
 - 路径: c:\Users\FY\WorkBuddy\Claw\quant_system\
 - 框架: Streamlit Web界面 + SQLite本地缓存
-- 数据源: AkShare > Baostock > Eastmoney > CSV > 模拟
+- 数据源: Baostock > CSV（只保留这两个数据源）
 
 ## 用户偏好与习惯
 - 用户使用中文交流
 - 量化交易系统项目
 - 关注功能完整性和代码质量
+- **重要工作习惯**: 每次写完代码必须验证，确保修改生效后再结束任务
 
 ## 项目已知问题
 1. stop_loss.py 缺失 - risk目录缺少
@@ -21,10 +22,20 @@
 - 修复方式：`DataManager` 默认使用 `Claw` 目录下的数据库
 
 ## 数据源配置
-- 数据源优先级已调整为: Baostock > AkShare > Eastmoney > CSV
+- **只保留 Baostock 和 CSV 两个数据源** (2026-04-08 更新)
+- 优先级: Baostock > CSV
 - Baostock 代码格式: 需处理后缀 (.SZ/.SH/.BJ)，正确转换为 sh./sz. 前缀
 - **重要**: Baostock 根据后缀判断交易所，000001.SH=上证指数，000001.SZ=平安银行，不能混淆
 - 上证指数=000001.SH, 深圳指数=399001.SZ
+
+## 数据读取逻辑（2026-04-08）
+- **核心原则**: 先从数据库读取，如果没有数据再从 Baostock 获取
+- **读取流程**:
+  1. 先从 `quant_data.db` 的 `daily_kline` 表读取股票日线数据
+  2. 检查数据完整性（`_check_data_complete` 方法）
+  3. 如果数据库中没有数据或不完整，从 Baostock 获取数据
+  4. 获取后保存到数据库（`_save_kline_to_db` 方法，先删除再插入避免冲突）
+- **数据完整性判断**: 估算交易日数量约为日历天的40%，数据条数 >= 估算交易日×0.85 则认为完整
 
 ## 字段映射修复 (2026-04-07)
 - AkShare `涨跌额` → `change_amount` (原错误映射为 `change`)
@@ -41,6 +52,7 @@
 - multi_stock_backtest: 需要先set_data()再run()，注意方法调用顺序
 - StockScore.signal_type默认值是""，导致select_buy_candidates无法匹配"buy"/"hold"，应改为"hold"
 - **日期类型不匹配**: df['date']是字符串'2023-01-03'，而all_dates是Timestamp，直接==比较失败，需统一转为字符串
+- **position_sizer.py 仓位分配 bug (2026-04-08)**: 当 `max_single_position=0.2` 时，高价股票（如000001.SH上证指数价格2700+）按20%仓位只能分配20万，但买入100股需要27万+，导致 `shares=0`。这些无法买入的股票的权重之前会被保留但实际上没有被使用，造成资金浪费。**修复**: 在 `allocate()` 方法中，当某只股票因金额不足无法购买100股时，释放其权重给其他股票。**解决方案**: 交易高价股票时需要将 `max_single` 设置为30%或更高。
 
 ## 回测引擎修复 (2026-04-07)
 1. **backtest/engine.py**:
