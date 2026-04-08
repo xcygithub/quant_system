@@ -372,13 +372,9 @@ class MultiDataSource:
     
     def _init_sources(self):
         """初始化所有数据源"""
-        # 按优先级添加数据源（优先使用baostock真实数据）
-        self.sources.append(BaostockDataSource())  # 优先使用baostock
-        self.sources.append(AkshareDataSource(max_retries=3))
-        self.sources.append(EastmoneyDataSource())  # 直接API
-        self.sources.append(CSVDataSource())
-        # 模拟数据作为最后备选，但默认不使用
-        # self.sources.append(SimulatedDataSource())
+        # 只保留 baostock 和 csv 两个数据源
+        self.sources.append(BaostockDataSource())  # 优先使用baostock（真实数据）
+        self.sources.append(CSVDataSource())  # 本地CSV文件作为备选
     
     def get_daily_kline(self, symbol: str, start_date: str, end_date: str, 
                        prefer_source: str = None) -> pd.DataFrame:

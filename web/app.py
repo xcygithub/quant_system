@@ -98,7 +98,13 @@ def get_latest_quote(symbol):
         # 获取最近30天的数据
         end_date = datetime.now()
         start_date = end_date - timedelta(days=30)
-        df = dm.get_daily_kline(symbol, start_date.strftime("%Y-%m-%d"), end_date.strftime("%Y-%m-%d"))
+
+        # 先从数据库读取，如果没有再从在线数据源获取
+        df = dm.get_daily_kline(
+            symbol,
+            start_date.strftime("%Y-%m-%d"),
+            end_date.strftime("%Y-%m-%d")
+        )
 
         if df.empty:
             return None
@@ -936,7 +942,16 @@ with tab1:
                 
                 if quotes_data:
                     quotes_df = pd.DataFrame(quotes_data)
-                    
+
+                    # 使用pandas的format功能保留两位小数（Streamlit的st.dataframe需要这样格式化）
+                    float_format = lambda x: f'{x:.2f}'
+                    styled_df = quotes_df.style.format({
+                        '最新价': float_format,
+                        '涨跌额': float_format,
+                        '涨跌幅': float_format,
+                        '成交量(万)': float_format
+                    }, na_rep='-')
+
                     # 使用样式突出涨跌
                     def highlight_change(val):
                         if isinstance(val, (int, float)):
@@ -945,8 +960,8 @@ with tab1:
                             elif val < 0:
                                 return 'color: #28a745'  # 绿色表示跌
                         return ''
-                    
-                    styled_df = quotes_df.style.applymap(highlight_change, subset=['涨跌额', '涨跌幅'])
+
+                    styled_df = styled_df.applymap(highlight_change, subset=['涨跌额', '涨跌幅'])
                     st.dataframe(styled_df, use_container_width=True, hide_index=True)
                 else:
                     st.info("暂无行情数据")

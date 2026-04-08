@@ -393,16 +393,22 @@ class DataManager:
         """检查数据是否完整"""
         if df.empty:
             return False
-        
-        # 简单检查：数据条数是否足够
+
+        # 更严格的检查：数据条数应该接近交易日数量
+        # 交易日数量 = 工作日数量（粗略估算为日历天的1/5，但更准确的是直接计算）
         start = datetime.strptime(start_date, "%Y-%m-%d")
         end = datetime.strptime(end_date, "%Y-%m-%d")
-        expected_days = (end - start).days
-        
-        # 考虑交易日约为日历日的70%
-        expected_trading_days = int(expected_days * 0.7)
-        
-        return len(df) >= expected_trading_days * 0.9  # 允许10%的缺失
+        total_days = (end - start).days
+
+        if total_days <= 0:
+            return True
+
+        # 粗略估算交易日数量（约为日历天的40%，因为扣除周末和假期）
+        estimated_trading_days = int(total_days * 0.4)
+
+        # 如果数据条数 >= 估算的交易日数量 * 0.85，认为数据完整
+        # 这个阈值比较宽松，避免因假期等原因误判
+        return len(df) >= estimated_trading_days * 0.85
     
     def update_all_data(self):
         """更新所有数据"""

@@ -411,11 +411,12 @@ class MultiStockBacktest:
         # 评分
         scores = self.selector.score_stocks(data_for_scoring, signals_for_scoring)
 
-        # 筛选买入候选
+        # 筛选买入候选 - 降低门槛确保有买入信号的股票能被选中
+        # 注意: signal_type 只是参考，有买入信号但 signal_type='sell' 的股票仍可能被选中
         candidates = self.selector.select_buy_candidates(
             scores,
             top_n=self.max_positions,
-            min_score=30  # 最低得分门槛
+            min_score=20  # 降低门槛，确保更多股票能被选中
         )
 
         return candidates

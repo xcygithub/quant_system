@@ -298,19 +298,17 @@ class StockSelector:
         min_score: float = None
     ) -> List[StockScore]:
         """筛选买入候选股票"""
-        # 优先选择买入信号的股票
-        buy_scores = [s for s in scores if s.signal_type == "buy"]
-        hold_scores = [s for s in scores if s.signal_type == "hold"]
+        # 按综合得分排序所有股票（不再只依赖 signal_type）
+        # 这样有买入历史但当前 signal_type 不是 'buy' 的股票也可能被选中
+        sorted_scores = sorted(scores, key=lambda x: x.composite_score, reverse=True)
 
-        # 合并，买入信号优先
-        combined = buy_scores + hold_scores
+        # 按最低得分过滤
+        min_s = min_score if min_score is not None else self.min_score
+        filtered = [s for s in sorted_scores if s.composite_score >= min_s]
 
-        return self.filter_and_rank(
-            combined,
-            top_n=top_n,
-            min_score=min_score,
-            signal_type=None
-        )
+        # 取 Top N
+        n = top_n if top_n is not None else self.top_n
+        return filtered[:n]
 
 
 def create_selector(
