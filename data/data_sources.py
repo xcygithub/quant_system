@@ -146,7 +146,7 @@ class BaostockDataSource(DataSourceBase):
                 start_date=start_date,
                 end_date=end_date,
                 frequency="d",
-                adjustflag="3"
+                adjustflag="2"  # 2=前复权，1=后复权，3=不复权
             )
             
             if rs.error_code != '0':

@@ -79,6 +79,7 @@ class TradeDetail:
     exit_quantity: int = 0
     exit_amount: float = 0.0
     exit_commission: float = 0.0  # 卖出手续费（含印花税）
+    exit_reason: str = ""  # 卖出原因：止损卖出/调仓卖出/回测结束
     # 计算字段
     holding_days: int = 0
     return_rate: float = 0.0  # 毛收益率
@@ -193,6 +194,9 @@ class MultiStockBacktest:
         self.trading_days = 0
         self.last_rebalance_day = -1
 
+        # 记录当天止损卖出的股票（避免当天又被买回）
+        self._stop_loss_sold_today: set = set()
+
     def set_data(
         self,
         stock_data: Dict[str, pd.DataFrame],
@@ -248,6 +252,9 @@ class MultiStockBacktest:
         # 遍历每个交易日
         for i, date in enumerate(all_dates):
             self.trading_days = i
+
+            # 每天开始时清空当天止损卖出的股票记录
+            self._stop_loss_sold_today.clear()
 
             # 获取当日数据
             current_prices = self._get_prices_on_date(date)
@@ -399,11 +406,22 @@ class MultiStockBacktest:
         # 执行止损平仓
         for symbol in positions_to_close:
             self._close_position(symbol, date, prices.get(symbol, 0), "止损")
+            # 记录当天止损卖出的股票，避免当天又被买回
+            self._stop_loss_sold_today.add(symbol)
 
     def _rebalance(self, date, prices: Dict[str, float]):
         """调仓：卖出不需要持仓的，买入新候选"""
+        # 0. 排除当天止损卖出的股票，避免当天又被买回
+        stop_loss_sold = self._stop_loss_sold_today.copy()
+
         # 1. 选出新的候选股票
         new_candidates = self._select_candidates()
+
+        if not new_candidates:
+            return
+
+        # 过滤掉当天止损卖出的股票
+        new_candidates = [c for c in new_candidates if c.symbol not in stop_loss_sold]
 
         if not new_candidates:
             return
@@ -671,6 +689,7 @@ class MultiStockBacktest:
             td.exit_quantity = sell_quantity
             td.exit_amount = amount
             td.exit_commission = commission + stamp
+            td.exit_reason = reason  # 记录卖出原因
 
             # 计算持有天数
             entry_dt = pd.to_datetime(td.entry_date)
@@ -889,7 +908,8 @@ class MultiStockBacktest:
                 '收益率（%）': round(td.return_rate * 100, 2),
                 '净收益率（%）': round(td.net_return_rate * 100, 2),
                 '收益金额（元）': round(td.profit, 2),
-                '状态': status_text
+                '状态': status_text,
+                '卖出原因': td.exit_reason if td.status == 'closed' else ''
             })
 
         return pd.DataFrame(records)
