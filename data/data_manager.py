@@ -389,6 +389,60 @@ class DataManager:
         finally:
             conn.close()
     
+    def update_recent_data(self, symbols: list, days: int = 10):
+        """
+        更新指定股票列表的最近N天数据（不包括今天）
+
+        专门用于刷新自选股的最新行情数据。
+        逻辑：先检查数据库，如果数据库中已有最近days天的完整数据，则跳过；
+        否则从在线数据源获取缺少的数据。
+
+        Args:
+            symbols: 股票代码列表
+            days: 获取最近多少天的数据（默认10天，确保覆盖5个交易日）
+
+        Returns:
+            updated_count: 实际从在线源更新了数据的股票数量
+        """
+        # 计算日期范围：今天之前的days天（不包括今天）
+        # 交易日数量约为日历天的40%，所以取 days*3 作为搜索范围以确保覆盖足够的交易日
+        end_date = datetime.now().strftime("%Y-%m-%d")
+        start_date = (datetime.now() - timedelta(days=days*3)).strftime("%Y-%m-%d")
+
+        updated_count = 0
+        for symbol in symbols:
+            try:
+                # 先检查数据库中最近days天的数据是否完整
+                existing_df = self._get_kline_from_db(symbol, start_date, end_date)
+
+                # 估算需要的交易日数量
+                start_dt = datetime.strptime(start_date, "%Y-%m-%d")
+                end_dt = datetime.now()
+                total_days = (end_dt - start_dt).days
+                estimated_trading_days = int(total_days * 0.4)
+
+                # 检查数据库中的数据是否足够（至少要有85%的估算交易日数据）
+                if len(existing_df) >= estimated_trading_days * 0.85:
+                    # 数据库中已有足够数据，跳过更新
+                    print(f"  {symbol} 数据库已有足够数据 ({len(existing_df)} 条)，跳过更新")
+                    continue
+
+                # 数据不完整，从在线数据源获取
+                print(f"  {symbol} 数据库数据不完整 ({len(existing_df)} 条)，从在线源获取...")
+                df = self.data_source.get_daily_kline(symbol, start_date, end_date)
+                if not df.empty:
+                    # 增量保存到数据库
+                    self._save_kline_to_db(df)
+                    updated_count += 1
+                    print(f"  已更新 {symbol} 最新数据 ({len(df)} 条)")
+                else:
+                    print(f"  {symbol} 未获取到最新数据")
+            except Exception as e:
+                print(f"  更新 {symbol} 失败: {e}")
+
+        print(f"数据更新完成: {updated_count}/{len(symbols)} 只股票从在线源更新")
+        return updated_count
+
     def _check_data_complete(self, df: pd.DataFrame, start_date: str, end_date: str) -> bool:
         """检查数据是否完整"""
         if df.empty:

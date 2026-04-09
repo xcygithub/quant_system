@@ -814,6 +814,10 @@ with tab1:
                     
                     # 使用按钮实现点击效果
                     if st.button(f"查看 {stock.symbol}", key=f"view_{stock.symbol}"):
+                        # 只更新当前选中股票最近5天的数据（不包括今天）
+                        # 先查数据库，如果有数据就不从baostock获取
+                        with st.spinner("正在更新行情数据..."):
+                            dm.update_recent_data([stock.symbol], days=5)
                         st.session_state['selected_stock'] = stock.symbol
                         st.rerun()
                 else:
