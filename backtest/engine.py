@@ -416,20 +416,22 @@ class BacktestEngine:
 class VectorizedBacktest:
     """
     向量化回测引擎
-    
+
     特点：
     - 使用矩阵运算，速度极快
     - 适合策略研究和参数优化
     - 不支持复杂的订单类型
     """
-    
+
     def __init__(
         self,
         initial_capital: float = 1000000.0,
-        commission_rate: float = 0.0003
+        commission_rate: float = 0.0003,
+        min_holding_days: int = 0  # 最短持股天数
     ):
         self.initial_capital = initial_capital
         self.commission_rate = commission_rate
+        self.min_holding_days = min_holding_days
     
     def run(
         self,
@@ -556,27 +558,32 @@ class VectorizedBacktest:
                     
                 # 卖出信号: 从1变为0或-1
                 elif prev_signal == 1 and signal <= 0:
-                    # 计算收益率
-                    return_rate = (price - entry_price) / entry_price
-                    
-                    # 计算手续费 (双边)
-                    commission = entry_price * entry_quantity * self.commission_rate + price * entry_quantity * self.commission_rate
-                    
-                    # 计算净收益率 (扣除手续费)
-                    net_return = return_rate - (commission / (entry_price * entry_quantity))
-                    
                     # 计算持有天数
                     entry_dt = pd.to_datetime(entry_date)
                     exit_dt = pd.to_datetime(date)
                     holding_days = (exit_dt - entry_dt).days
-                    
+
+                    # 检查最短持股天数限制
+                    if self.min_holding_days > 0 and holding_days < self.min_holding_days:
+                        # 持有天数不足，忽略卖出信号，继续持仓
+                        continue
+
+                    # 计算收益率
+                    return_rate = (price - entry_price) / entry_price
+
+                    # 计算手续费 (双边)
+                    commission = entry_price * entry_quantity * self.commission_rate + price * entry_quantity * self.commission_rate
+
+                    # 计算净收益率 (扣除手续费)
+                    net_return = return_rate - (commission / (entry_price * entry_quantity))
+
                     # 计算买入金额和卖出金额
                     entry_value = entry_price * entry_quantity
                     exit_value = price * entry_quantity
-                    
+
                     # 计算收益金额
                     profit = exit_value - entry_value - commission
-                    
+
                     trade = {
                         'trade_id': trade_id,
                         'entry_date': entry_date,

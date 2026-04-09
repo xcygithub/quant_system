@@ -1084,12 +1084,22 @@ with tab2:
                     max_single = st.slider("单只最大仓位", 0, 20, 20, 1, format="%.0f%%") / 100
                 with col5:
                     max_total = st.slider("最大总仓位", 0, 100, 80, 5, format="%.0f%%") / 100
+
+                # 最短持股天数
+                min_holding_days = st.number_input(
+                    "最短持股天数",
+                    value=0,
+                    min_value=0,
+                    max_value=60,
+                    help="买入股票后，最少持有该天数才能卖出。0表示不限制"
+                )
             else:
                 max_positions = 1
                 rebalance_days = 5
                 position_method = "equal"
                 max_single = 0.2
                 max_total = 0.8
+                min_holding_days = 0
 
     # 运行回测按钮
     if st.button("🚀 运行回测", key="run_backtest", type="primary"):
@@ -1159,7 +1169,8 @@ with tab2:
                     # 运行回测
                     engine = VectorizedBacktest(
                         initial_capital=initial_capital,
-                        commission_rate=commission_rate
+                        commission_rate=commission_rate,
+                        min_holding_days=min_holding_days
                     )
                     results = engine.run(
                         price_data=df_with_factors,
@@ -1232,17 +1243,17 @@ with tab2:
                             trade_records.append({
                                 '交易ID': t['trade_id'],
                                 '买入日期': str(entry_date)[:10] if entry_date else '',
-                                '买入价格': f"{t['entry_price']:.2f}",
+                                '买入价格（元）': t['entry_price'],
                                 '买入数量': t['entry_quantity'],
-                                '买入金额': f"¥{t['entry_value']:,.2f}",
+                                '买入金额（元）': t['entry_value'],
                                 '卖出日期': str(exit_date)[:10] if exit_date != '持有中' else '持有中',
-                                '卖出价格': f"{t['exit_price']:.2f}" if exit_date != '持有中' else '—',
-                                '卖出金额': f"¥{t['exit_value']:,.2f}" if exit_date != '持有中' else '—',
-                                '持有天数': f"{t['holding_days']}天",
-                                '收益率': f"{return_rate:.2%}",
-                                '净收益率': f"{net_return_rate:.2%}",
-                                '收益金额': f"¥{t['profit']:,.2f}",
-                                '手续费': f"¥{t['commission']:.2f}",
+                                '卖出价格（元）': t['exit_price'] if exit_date != '持有中' else None,
+                                '卖出金额（元）': t['exit_value'] if exit_date != '持有中' else None,
+                                '持有天数': t['holding_days'],
+                                '收益率（%）': return_rate * 100,
+                                '净收益率（%）': net_return_rate * 100,
+                                '收益金额（元）': t['profit'],
+                                '手续费（元）': t['commission'],
                                 '状态': status_text
                             })
 
@@ -1276,15 +1287,15 @@ with tab2:
                             st.markdown("**📌 持仓明细（持有中）:**")
                             for t in open_trades:
                                 holding_days = t['holding_days']
-                                return_rate = t['return_rate']
+                                return_rate = t['return_rate'] * 100
                                 unrealized_profit = t['profit']
                                 st.markdown(
                                     f"- 买入日期: {str(t['entry_date'])[:10]}, "
-                                    f"价格: ¥{t['entry_price']:.2f}, "
+                                    f"价格: {t['entry_price']:.2f}元, "
                                     f"数量: {t['entry_quantity']}股, "
-                                    f"当前价: ¥{t['exit_price']:.2f}, "
+                                    f"当前价: {t['exit_price']:.2f}元, "
                                     f"持有: {holding_days}天, "
-                                    f"浮动盈亏: ¥{unrealized_profit:+,.2f} ({return_rate:+.2%})"
+                                    f"浮动盈亏: {unrealized_profit:+,.2f}元 ({return_rate:+.2f}%)"
                                 )
                     else:
                         st.info("本次回测无交易记录")
@@ -1299,7 +1310,8 @@ with tab2:
                         rebalance_days=rebalance_days,
                         position_method=position_method,
                         max_single_position=max_single,
-                        max_total_position=max_total
+                        max_total_position=max_total,
+                        min_holding_days=min_holding_days
                     )
 
                     engine.set_data(stock_data, signals)
@@ -1406,12 +1418,13 @@ with tab2:
                             if open_trades:
                                 st.markdown("**📌 持仓明细（持有中）:**")
                                 for td in open_trades:
+                                    return_rate_pct = td.return_rate * 100
                                     st.markdown(
                                         f"- {td.symbol}: 买入日期 {str(td.entry_date)[:10]}, "
-                                        f"价格 ¥{td.entry_price:.2f}, 数量 {td.entry_quantity}股, "
-                                        f"当前价 ¥{td.exit_price:.2f}, "
+                                        f"价格 {td.entry_price:.2f}元, 数量 {td.entry_quantity}股, "
+                                        f"当前价 {td.exit_price:.2f}元, "
                                         f"持有 {td.holding_days}天, "
-                                        f"浮动盈亏 ¥{td.profit:+,.2f} ({td.return_rate:+.2%})"
+                                        f"浮动盈亏 {td.profit:+,.2f}元 ({return_rate_pct:+.2f}%)"
                                     )
                         else:
                             st.info("本次回测无交易记录")

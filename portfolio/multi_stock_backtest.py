@@ -20,6 +20,7 @@ class PortfolioPosition:
     quantity: int
     avg_price: float
     current_price: float = 0
+    entry_date: Any = None  # 买入日期，用于计算持有天数
 
     @property
     def market_value(self) -> float:
@@ -34,6 +35,14 @@ class PortfolioPosition:
         if self.avg_price == 0:
             return 0
         return (self.current_price - self.avg_price) / self.avg_price
+
+    def get_holding_days(self, current_date) -> int:
+        """计算持有天数"""
+        if self.entry_date is None:
+            return 0
+        entry_dt = pd.to_datetime(self.entry_date)
+        current_dt = pd.to_datetime(current_date)
+        return (current_dt - entry_dt).days
 
 
 @dataclass
@@ -126,7 +135,8 @@ class MultiStockBacktest:
         position_method: str = "equal",
         selector_method: str = "composite",
         max_single_position: float = 0.3,
-        max_total_position: float = 0.8
+        max_total_position: float = 0.8,
+        min_holding_days: int = 0  # 最短持股天数（买入后最少持有天数）
     ):
         """
         初始化多股票回测引擎
@@ -141,6 +151,7 @@ class MultiStockBacktest:
             selector_method: 选股方法
             max_single_position: 单只股票最大仓位
             max_total_position: 最大总仓位
+            min_holding_days: 最短持股天数（买入后最少持有天数才能卖出，0表示不限制）
         """
         self.initial_capital = initial_capital
         self.commission_rate = commission_rate
@@ -151,6 +162,7 @@ class MultiStockBacktest:
         self.selector_method = selector_method
         self.max_single_position = max_single_position
         self.max_total_position = max_total_position
+        self.min_holding_days = min_holding_days
 
         # 状态
         self.cash = initial_capital
@@ -334,6 +346,13 @@ class MultiStockBacktest:
         positions_to_close = []
 
         for symbol, pos in self.positions.items():
+            # 检查最短持股天数限制
+            if self.min_holding_days > 0 and pos.entry_date is not None:
+                holding_days = pos.get_holding_days(date)
+                if holding_days < self.min_holding_days:
+                    # 持有天数不足，跳过此次检查
+                    continue
+
             if symbol in self.signals:
                 signal_series = self.signals[symbol]
 
@@ -366,9 +385,18 @@ class MultiStockBacktest:
         target_symbols = {score.symbol for score in new_candidates}
         current_symbols = set(self.positions.keys())
 
-        # 3. 卖出不在目标中的持仓
+        # 3. 卖出不在目标中的持仓（考虑最短持股天数）
         to_sell = current_symbols - target_symbols
         for symbol in to_sell:
+            # 检查最短持股天数限制
+            if self.min_holding_days > 0 and symbol in self.positions:
+                pos = self.positions[symbol]
+                if pos.entry_date is not None:
+                    holding_days = pos.get_holding_days(date)
+                    if holding_days < self.min_holding_days:
+                        # 持有天数不足，跳过此股票，不强制卖出
+                        continue
+
             self._close_position(symbol, date, prices.get(symbol, 0), "调仓换股")
 
         # 4. 分配仓位并买入
@@ -475,13 +503,15 @@ class MultiStockBacktest:
             pos.avg_price = (pos.avg_price * pos.quantity + price * quantity) / total_quantity
             pos.quantity = total_quantity
             pos.current_price = price
+            # 注意：加仓时保持原有的entry_date不变
         else:
             # 新开仓
             self.positions[symbol] = PortfolioPosition(
                 symbol=symbol,
                 quantity=quantity,
                 avg_price=price,
-                current_price=price
+                current_price=price,
+                entry_date=date  # 记录买入日期
             )
 
         # 记录交易
@@ -770,19 +800,19 @@ class MultiStockBacktest:
                 '交易ID': td.trade_id,
                 '股票': td.symbol,
                 '买入日期': str(td.entry_date)[:10] if td.entry_date else '',
-                '买入价格': f"¥{td.entry_price:.2f}",
+                '买入价格（元）': td.entry_price,
                 '买入数量': td.entry_quantity,
-                '买入金额': f"¥{td.entry_amount:,.2f}",
-                '买入手续费': f"¥{td.entry_commission:.2f}",
+                '买入金额（元）': td.entry_amount,
+                '买入手续费（元）': td.entry_commission,
                 '卖出日期': str(td.exit_date)[:10] if td.exit_date and td.exit_date != '持有中' else '持有中',
-                '卖出价格': f"¥{td.exit_price:.2f}" if td.exit_date and td.exit_date != '持有中' else '—',
+                '卖出价格（元）': td.exit_price if td.exit_date and td.exit_date != '持有中' else None,
                 '卖出数量': td.exit_quantity if td.exit_quantity > 0 else td.entry_quantity,
-                '卖出金额': f"¥{td.exit_amount:,.2f}" if td.exit_amount > 0 else '—',
-                '卖出手续费': f"¥{td.exit_commission:.2f}" if td.exit_commission > 0 else '—',
-                '持有天数': f"{td.holding_days}天" if td.holding_days > 0 else '—',
-                '收益率': f"{td.return_rate:.2%}",
-                '净收益率': f"{td.net_return_rate:.2%}",
-                '收益金额': f"¥{td.profit:+,.2f}",
+                '卖出金额（元）': td.exit_amount if td.exit_amount > 0 else None,
+                '卖出手续费（元）': td.exit_commission if td.exit_commission > 0 else None,
+                '持有天数': td.holding_days if td.holding_days > 0 else None,
+                '收益率（%）': td.return_rate * 100,
+                '净收益率（%）': td.net_return_rate * 100,
+                '收益金额（元）': td.profit,
                 '状态': status_text
             })
 
