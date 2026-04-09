@@ -427,14 +427,12 @@ class VectorizedBacktest:
         self,
         initial_capital: float = 1000000.0,
         commission_rate: float = 0.0003,
-        min_holding_days: int = 0,  # 最短持股天数
         stop_loss: float = 0.0,  # 止损比例（负数，如-0.1表示亏损10%时止损）
         max_single_position: float = 1.0,  # 单只最大仓位比例
         max_total_position: float = 1.0  # 最大总仓位比例
     ):
         self.initial_capital = initial_capital
         self.commission_rate = commission_rate
-        self.min_holding_days = min_holding_days
         self.stop_loss = stop_loss
         self.max_single_position = max_single_position
         self.max_total_position = max_total_position
@@ -609,11 +607,6 @@ class VectorizedBacktest:
                     entry_dt = pd.to_datetime(entry_date)
                     exit_dt = pd.to_datetime(date)
                     holding_days = (exit_dt - entry_dt).days
-
-                    # 检查最短持股天数限制
-                    if self.min_holding_days > 0 and holding_days < self.min_holding_days:
-                        # 持有天数不足，忽略卖出信号，继续持仓
-                        continue
 
                     # 计算收益率
                     return_rate = (price - entry_price) / entry_price

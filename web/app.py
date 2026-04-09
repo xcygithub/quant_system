@@ -1088,15 +1088,6 @@ with tab2:
                 with col5:
                     max_total = st.slider("最大总仓位", 0, 100, 80, 5, format="%.0f%%") / 100
 
-                # 最短持股天数
-                min_holding_days = st.number_input(
-                    "最短持股天数",
-                    value=0,
-                    min_value=0,
-                    max_value=60,
-                    help="买入股票后，最少持有该天数才能卖出。0表示不限制"
-                )
-
                 # 止损参数
                 stop_loss = st.number_input(
                     "止损比例（%）",
@@ -1111,7 +1102,6 @@ with tab2:
                 position_method = "equal"
                 max_single = 0.2
                 max_total = 0.8
-                min_holding_days = 0
                 stop_loss = 0
 
     # 运行回测按钮
@@ -1175,7 +1165,6 @@ with tab2:
                         position_method=position_method,
                         max_single_position=max_single,
                         max_total_position=max_total,
-                        min_holding_days=min_holding_days,
                         stop_loss=-stop_loss  # 转为负数
                     )
 

@@ -137,7 +137,6 @@ class MultiStockBacktest:
         selector_method: str = "composite",
         max_single_position: float = 0.3,
         max_total_position: float = 0.8,
-        min_holding_days: int = 0,  # 最短持股天数（买入后最少持有天数）
         stop_loss: float = 0.0  # 止损比例（负数，如-0.1表示亏损10%时止损，0表示不止损）
     ):
         """
@@ -153,7 +152,6 @@ class MultiStockBacktest:
             selector_method: 选股方法
             max_single_position: 单只股票最大仓位
             max_total_position: 最大总仓位
-            min_holding_days: 最短持股天数（买入后最少持有天数才能卖出，0表示不限制）
             stop_loss: 止损比例（负数，如-0.1表示亏损10%时止损，0表示不止损）
         """
         self.initial_capital = initial_capital
@@ -165,7 +163,6 @@ class MultiStockBacktest:
         self.selector_method = selector_method
         self.max_single_position = max_single_position
         self.max_total_position = max_total_position
-        self.min_holding_days = min_holding_days
         self.stop_loss = stop_loss
 
         # 状态
@@ -264,14 +261,21 @@ class MultiStockBacktest:
             should_rebalance = (i - self.last_rebalance_day) >= self.rebalance_days
             needs_initial_position = (len(self.positions) == 0 and self.cash > 0)
 
-            # 检查卖出信号
-            self._check_sell_signals(date, current_prices)
-
-            # 检查止损
+            # 【优先级最高】第一步：全量检查止损（每天必做！）
             self._check_stop_loss(date, current_prices)
 
-            # 如果需要调仓且有现金，选择新股票买入
-            if (should_rebalance or needs_initial_position) and self.cash > 0:
+            # 如果不是调仓日，今天结束（只监控止损，不买卖）
+            if not (should_rebalance or needs_initial_position):
+                # 记录每日快照
+                self._record_snapshot(date)
+                continue
+
+            # 【调仓日核心流程】
+            # 第二步：检查卖出信号
+            self._check_sell_signals(date, current_prices)
+
+            # 第三步：调仓买入
+            if self.cash > 0:
                 self._rebalance(date, current_prices)
 
             # 记录每日快照
@@ -353,13 +357,6 @@ class MultiStockBacktest:
         positions_to_close = []
 
         for symbol, pos in self.positions.items():
-            # 检查最短持股天数限制
-            if self.min_holding_days > 0 and pos.entry_date is not None:
-                holding_days = pos.get_holding_days(date)
-                if holding_days < self.min_holding_days:
-                    # 持有天数不足，跳过此次检查
-                    continue
-
             if symbol in self.signals:
                 signal_series = self.signals[symbol]
 
@@ -415,18 +412,9 @@ class MultiStockBacktest:
         target_symbols = {score.symbol for score in new_candidates}
         current_symbols = set(self.positions.keys())
 
-        # 3. 卖出不在目标中的持仓（考虑最短持股天数）
+        # 3. 卖出不在目标中的持仓
         to_sell = current_symbols - target_symbols
         for symbol in to_sell:
-            # 检查最短持股天数限制
-            if self.min_holding_days > 0 and symbol in self.positions:
-                pos = self.positions[symbol]
-                if pos.entry_date is not None:
-                    holding_days = pos.get_holding_days(date)
-                    if holding_days < self.min_holding_days:
-                        # 持有天数不足，跳过此股票，不强制卖出
-                        continue
-
             self._close_position(symbol, date, prices.get(symbol, 0), "调仓换股")
 
         # 4. 分配仓位并买入
