@@ -427,11 +427,17 @@ class VectorizedBacktest:
         self,
         initial_capital: float = 1000000.0,
         commission_rate: float = 0.0003,
-        min_holding_days: int = 0  # 最短持股天数
+        min_holding_days: int = 0,  # 最短持股天数
+        stop_loss: float = 0.0,  # 止损比例（负数，如-0.1表示亏损10%时止损）
+        max_single_position: float = 1.0,  # 单只最大仓位比例
+        max_total_position: float = 1.0  # 最大总仓位比例
     ):
         self.initial_capital = initial_capital
         self.commission_rate = commission_rate
         self.min_holding_days = min_holding_days
+        self.stop_loss = stop_loss
+        self.max_single_position = max_single_position
+        self.max_total_position = max_total_position
     
     def run(
         self,
@@ -456,8 +462,8 @@ class VectorizedBacktest:
         
         # 计算收益率
         df['market_return'] = df['close'].pct_change().fillna(0)  # 第一天收益为0
-        # 修正：实际仓位比例为10%（每次交易使用初始资金的10%）
-        actual_position_ratio = 0.1
+        # 使用 max_single_position 作为实际仓位比例（不能超过 max_total_position）
+        actual_position_ratio = min(self.max_single_position, self.max_total_position)
         df['strategy_return'] = df['position'] * df['market_return'] * actual_position_ratio
         
         # 计算换手率和手续费
@@ -537,7 +543,47 @@ class VectorizedBacktest:
             date = row.get('date', idx)
             price = row['close']
             volume = row.get('volume', 0)  # 获取成交量
-            
+
+            # 检查止损（当有持仓时）
+            if position == 1 and self.stop_loss != 0:
+                return_rate = (price - entry_price) / entry_price
+                if return_rate < self.stop_loss:
+                    # 触发止损，强制卖出
+                    exit_dt = pd.to_datetime(date)
+                    entry_dt = pd.to_datetime(entry_date)
+                    holding_days = (exit_dt - entry_dt).days
+
+                    # 计算手续费
+                    commission = entry_price * entry_quantity * self.commission_rate + price * entry_quantity * self.commission_rate
+
+                    # 计算收益
+                    exit_value = price * entry_quantity
+                    profit = exit_value - (entry_price * entry_quantity) - commission
+                    net_return = return_rate - (commission / (entry_price * entry_quantity))
+
+                    trades.append({
+                        'trade_id': trade_id,
+                        'entry_date': entry_date,
+                        'entry_price': entry_price,
+                        'entry_quantity': entry_quantity,
+                        'entry_value': entry_price * entry_quantity,
+                        'exit_date': date,
+                        'exit_price': price,
+                        'exit_quantity': entry_quantity,
+                        'exit_value': exit_value,
+                        'return_rate': return_rate,
+                        'net_return_rate': net_return,
+                        'profit': profit,
+                        'holding_days': holding_days,
+                        'commission': commission,
+                        'status': 'closed'
+                    })
+                    position = 0
+                    entry_price = 0
+                    entry_date = None
+                    entry_quantity = 0
+                    continue
+
             # 检测信号变化
             if idx > 0:
                 prev_signal = df.iloc[idx - 1]['position']
@@ -548,9 +594,10 @@ class VectorizedBacktest:
                     position = 1
                     entry_price = price
                     entry_date = date
-                    # 假设每次买入固定金额（初始资金的10%）
+                    # 使用 max_single_position 作为仓位比例
                     # A股交易规则：买入数量必须是100的整数倍（1手=100股）
-                    raw_quantity = (self.initial_capital * 0.1) / price
+                    target_position_ratio = min(self.max_single_position, self.max_total_position)
+                    raw_quantity = (self.initial_capital * target_position_ratio) / price
                     entry_quantity = int(raw_quantity / 100) * 100  # 向下取整到100的倍数
                     # 确保至少买入100股
                     if entry_quantity < 100:

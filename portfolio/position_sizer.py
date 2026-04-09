@@ -84,89 +84,79 @@ class PositionSizer:
             return []
 
         prices = prices or {}
+        n = len(candidates)
 
-        # 根据方法计算权重
+        # 根据方法计算基础权重
         if self.method == PositionMethod.EQUAL_WEIGHT:
-            weights = self._equal_weight(len(candidates))
+            base_weights = self._equal_weight(n)
         elif self.method == PositionMethod.RISK_PARITY:
-            weights = self._risk_parity([c[2] for c in candidates])
+            base_weights = self._risk_parity([c[2] for c in candidates])
         elif self.method == PositionMethod.MOMENTUM_WEIGHT:
-            weights = self._momentum_weight([c[1] for c in candidates])
+            base_weights = self._momentum_weight([c[1] for c in candidates])
         elif self.method == PositionMethod.SCORE_WEIGHT:
-            weights = self._score_weight([c[1] for c in candidates])
+            base_weights = self._score_weight([c[1] for c in candidates])
         elif self.method == PositionMethod.KELLY:
-            weights = self._kelly_weight([c[1] for c in candidates])
+            base_weights = self._kelly_weight([c[1] for c in candidates])
         else:
-            weights = self._equal_weight(len(candidates))
+            base_weights = self._equal_weight(n)
 
-        # 应用总仓位限制
-        weights = [w * self.max_total_position for w in weights]
+        # 第一阶段：检查哪些股票因价格太高无法购买100股
+        can_buy = []
+        for i, (symbol, score, volatility) in enumerate(candidates):
+            price = prices.get(symbol, 0)
+            # 按权重计算的金额
+            target_amount = total_capital * base_weights[i] * self.max_total_position
+            if price > 0 and target_amount >= price * 100:
+                can_buy.append(True)
+            else:
+                can_buy.append(False)
 
-        # 应用单只仓位限制
-        weights = [min(w, self.max_single_position) for w in weights]
+        # 计算可买入股票的调整后权重
+        can_buy_count = sum(can_buy)
+        if can_buy_count == 0:
+            # 没有股票可以买入，返回空结果
+            return [PositionResult(symbol=c[0], weight=0, shares=0, amount=0, score=c[1])
+                    for c in candidates]
+
+        # 可买入股票的权重（归一化到 max_total_position）
+        adjusted_weights = []
+        for i in range(n):
+            if can_buy[i]:
+                # 按基础权重比例分配，但不超过单只限制
+                w = base_weights[i] / sum(base_weights[j] for j in range(n) if can_buy[j])
+                w = min(w, self.max_single_position / self.max_total_position) * self.max_total_position
+                adjusted_weights.append(w)
+            else:
+                adjusted_weights.append(0)
 
         # 归一化，确保总和不超过 max_total_position
-        total_weight = sum(weights)
-        if total_weight > self.max_total_position:
-            weights = [w / total_weight * self.max_total_position for w in weights]
+        total_adj = sum(adjusted_weights)
+        if total_adj > self.max_total_position:
+            scale = self.max_total_position / total_adj
+            adjusted_weights = [w * scale for w in adjusted_weights]
 
-        # 分配资金
+        # 分配资金并计算股数
         results = []
-        zero_share_indices = []  # 记录因金额不足而无法买入的股票索引
-
         for i, (symbol, score, volatility) in enumerate(candidates):
-            weight = weights[i]
+            weight = adjusted_weights[i]
             amount = total_capital * weight
             price = prices.get(symbol, 0)
 
-            # 计算股数 (A股必须是100的整数倍)
-            if price > 0:
+            if price > 0 and weight > 0:
                 shares = int(amount / price / 100) * 100
-                shares = max(shares, 0)  # 确保非负
-                # 检查是否因金额不足而无法购买100股
-                if shares == 0 and amount < price * 100:
-                    # 金额不足以购买100股，记录索引
-                    zero_share_indices.append(i)
+                shares = max(shares, 0)
+                actual_amount = shares * price
             else:
                 shares = 0
-                amount = 0
+                actual_amount = 0
 
             results.append(PositionResult(
                 symbol=symbol,
                 weight=weight,
                 shares=shares,
-                amount=shares * price if price > 0 else 0,
+                amount=actual_amount,
                 score=score
             ))
-
-        # 处理因金额不足无法购买100股的股票：将她们的权重重新分配给其他股票
-        if zero_share_indices and len(results) > len(zero_share_indices):
-            # 计算释放的权重总和
-            released_weight = sum(results[i].weight for i in zero_share_indices)
-            released_amount = sum(results[i].amount for i in zero_share_indices)
-
-            # 清零这些无法买入的股票的权重和金额
-            for i in zero_share_indices:
-                results[i].weight = 0
-                results[i].amount = 0
-
-            # 计算剩余可分配的股票
-            remaining_indices = [i for i in range(len(results)) if i not in zero_share_indices and results[i].shares > 0]
-            if remaining_indices and released_weight > 0:
-                # 按权重比例将释放的权重加给其他股票
-                remaining_total_weight = sum(results[i].weight for i in remaining_indices)
-                for i in remaining_indices:
-                    if remaining_total_weight > 0:
-                        # 这只股票额外获得的权重比例
-                        extra_ratio = results[i].weight / remaining_total_weight
-                        extra_weight = released_weight * extra_ratio
-                        results[i].weight += extra_weight
-                        # 重新计算金额和股数
-                        extra_amount = total_capital * extra_weight
-                        results[i].amount += extra_amount
-                        extra_shares = int(extra_amount / prices.get(results[i].symbol, 0) / 100) * 100
-                        if extra_shares > 0:
-                            results[i].shares += extra_shares
 
         return results
 

@@ -17,7 +17,6 @@ sys.path.insert(0, str(project_root))
 
 from quant_system.data.data_manager import DataManager
 from quant_system.data.factor_data import FactorData
-from quant_system.backtest.engine import VectorizedBacktest
 from quant_system.backtest.performance import PerformanceAnalyzer
 from quant_system.strategy.moving_average import MovingAverageCrossStrategy, MACDStrategy, BollingerBandsStrategy
 from quant_system.strategy.multi_factor import MultiFactorStrategy, RSIStrategy
@@ -1093,6 +1092,15 @@ with tab2:
                     max_value=60,
                     help="买入股票后，最少持有该天数才能卖出。0表示不限制"
                 )
+
+                # 止损参数
+                stop_loss = st.number_input(
+                    "止损比例（%）",
+                    value=0,
+                    min_value=0,
+                    max_value=50,
+                    help="亏损超过此比例时自动止损平仓，如输入10表示亏损10%时止损。0表示不止损"
+                ) / 100  # 转换为小数
             else:
                 max_positions = 1
                 rebalance_days = 5
@@ -1100,6 +1108,7 @@ with tab2:
                 max_single = 0.2
                 max_total = 0.8
                 min_holding_days = 0
+                stop_loss = 0
 
     # 运行回测按钮
     if st.button("🚀 运行回测", key="run_backtest", type="primary"):
@@ -1148,170 +1157,22 @@ with tab2:
 
                 if len(stock_data) == 0:
                     st.error("所有股票都没有获取到数据!")
-                elif is_single_stock:
-                    # ==================== 单股票回测 ====================
-                    sym = symbols[0]
-                    df = stock_data[sym]
-                    df_with_factors = FactorData(df).calculate_all_factors()
-
-                    # 创建策略
-                    if strategy_name == "均线交叉 (MA Cross)":
-                        strategy = MovingAverageCrossStrategy(strategy_params)
-                    elif strategy_name == "MACD":
-                        strategy = MACDStrategy(strategy_params)
-                    elif strategy_name == "布林带 (Bollinger Bands)":
-                        strategy = BollingerBandsStrategy(strategy_params)
-                    elif strategy_name == "RSI":
-                        strategy = RSIStrategy(strategy_params)
-                    else:
-                        strategy = MultiFactorStrategy(strategy_params)
-
-                    # 运行回测
-                    engine = VectorizedBacktest(
-                        initial_capital=initial_capital,
-                        commission_rate=commission_rate,
-                        min_holding_days=min_holding_days
-                    )
-                    results = engine.run(
-                        price_data=df_with_factors,
-                        signal_series=strategy.get_signal_series(df_with_factors)
-                    )
-
-                    # 显示结果
-                    col1, col2, col3, col4 = st.columns(4)
-                    with col1:
-                        st.metric("总收益率", f"{results['total_return']:.2%}")
-                    with col2:
-                        st.metric("年化收益率", f"{results['annual_return']:.2%}")
-                    with col3:
-                        st.metric("夏普比率", f"{results['sharpe_ratio']:.2f}")
-                    with col4:
-                        st.metric("最大回撤", f"{results['max_drawdown']:.2%}")
-
-                    # 绘制权益曲线
-                    equity_df = results['equity_curve'].copy()
-                    # 确保有date列
-                    if 'date' not in equity_df.columns:
-                        equity_df['date'] = df_with_factors['date'].values[:len(equity_df)]
-                    if 'total_value' not in equity_df.columns:
-                        equity_df['total_value'] = equity_df['strategy_equity']
-
-                    fig = go.Figure()
-                    fig.add_trace(go.Scatter(
-                        x=equity_df['date'],
-                        y=equity_df['total_value'],
-                        name='账户净值'
-                    ))
-                    fig.update_layout(title='权益曲线', xaxis_title='日期', yaxis_title='净值')
-                    st.plotly_chart(fig, use_container_width=True)
-
-                    # 获取策略信号并绘制信号图
-                    signal_series = strategy.get_signal_series(df_with_factors)
-                    # 将信号序列与df对齐
-                    if len(signal_series) == len(df_with_factors):
-                        fig_signals = plot_signals_only(df_with_factors, sym, signal_series)
-                        st.plotly_chart(fig_signals, use_container_width=True)
-                    else:
-                        # 尝试重置索引
-                        signal_series = signal_series.reset_index(drop=True)
-                        if len(signal_series) == len(df_with_factors):
-                            fig_signals = plot_signals_only(df_with_factors, sym, signal_series)
-                            st.plotly_chart(fig_signals, use_container_width=True)
-
-                    # 显示每次操作的收益率表格
-                    trades = results.get('trades', [])
-                    if trades:
-                        st.subheader("📋 每次操作收益率明细")
-
-                        # 构建交易记录DataFrame
-                        trade_records = []
-                        for t in trades:
-                            # 格式化日期显示
-                            entry_date = t['entry_date']
-                            exit_date = t['exit_date']
-
-                            # 判断状态
-                            if t['status'] == 'open':
-                                status_text = "持有中"
-                            else:
-                                status_text = "已卖出"
-
-                            # 计算收益率（显示百分比）
-                            return_rate = t['return_rate']
-                            net_return_rate = t['net_return_rate']
-
-                            trade_records.append({
-                                '交易ID': t['trade_id'],
-                                '买入日期': str(entry_date)[:10] if entry_date else '',
-                                '买入价格（元）': t['entry_price'],
-                                '买入数量': t['entry_quantity'],
-                                '买入金额（元）': t['entry_value'],
-                                '卖出日期': str(exit_date)[:10] if exit_date != '持有中' else '持有中',
-                                '卖出价格（元）': t['exit_price'] if exit_date != '持有中' else None,
-                                '卖出金额（元）': t['exit_value'] if exit_date != '持有中' else None,
-                                '持有天数': t['holding_days'],
-                                '收益率（%）': return_rate * 100,
-                                '净收益率（%）': net_return_rate * 100,
-                                '收益金额（元）': t['profit'],
-                                '手续费（元）': t['commission'],
-                                '状态': status_text
-                            })
-
-                        trades_df = pd.DataFrame(trade_records)
-
-                        # 显示统计信息
-                        closed_trades = [t for t in trades if t['status'] == 'closed']
-                        open_trades = [t for t in trades if t['status'] == 'open']
-
-                        stat_col1, stat_col2, stat_col3, stat_col4 = st.columns(4)
-                        with stat_col1:
-                            st.metric("总交易次数", len(trades))
-                        with stat_col2:
-                            st.metric("已完成交易", len(closed_trades))
-                        with stat_col3:
-                            st.metric("持有中", len(open_trades))
-                        with stat_col4:
-                            if closed_trades:
-                                win_rate = len([t for t in closed_trades if t['net_return_rate'] > 0]) / len(closed_trades)
-                                st.metric("胜率", f"{win_rate:.2%}")
-
-                        # 显示完整交易记录表格
-                        st.dataframe(
-                            trades_df,
-                            use_container_width=True,
-                            hide_index=True
-                        )
-
-                        # 如果有持仓中的股票，显示详细信息
-                        if open_trades:
-                            st.markdown("**📌 持仓明细（持有中）:**")
-                            for t in open_trades:
-                                holding_days = t['holding_days']
-                                return_rate = t['return_rate'] * 100
-                                unrealized_profit = t['profit']
-                                st.markdown(
-                                    f"- 买入日期: {str(t['entry_date'])[:10]}, "
-                                    f"价格: {t['entry_price']:.2f}元, "
-                                    f"数量: {t['entry_quantity']}股, "
-                                    f"当前价: {t['exit_price']:.2f}元, "
-                                    f"持有: {holding_days}天, "
-                                    f"浮动盈亏: {unrealized_profit:+,.2f}元 ({return_rate:+.2f}%)"
-                                )
-                    else:
-                        st.info("本次回测无交易记录")
-
                 else:
-                    # ==================== 多股票回测 ====================
-                    # 运行多股票回测
+                    # ==================== 统一回测（单股票或多股票都使用 MultiStockBacktest）====================
+                    # 单只股票时 max_positions=1，确保行为一致
+                    actual_max_positions = 1 if is_single_stock else max_positions
+
+                    # 运行回测（统一使用 MultiStockBacktest）
                     engine = MultiStockBacktest(
                         initial_capital=initial_capital,
                         commission_rate=commission_rate,
-                        max_positions=max_positions,
+                        max_positions=actual_max_positions,
                         rebalance_days=rebalance_days,
                         position_method=position_method,
                         max_single_position=max_single,
                         max_total_position=max_total,
-                        min_holding_days=min_holding_days
+                        min_holding_days=min_holding_days,
+                        stop_loss=-stop_loss  # 转为负数
                     )
 
                     engine.set_data(stock_data, signals)

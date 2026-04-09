@@ -72,6 +72,7 @@ class TradeDetail:
     entry_quantity: int = 0
     entry_amount: float = 0.0
     entry_commission: float = 0.0  # 买入手续费
+    entry_total_asset: float = 0.0  # 买入时的总资产
     # 卖出信息
     exit_date: Any = None
     exit_price: float = 0.0
@@ -136,7 +137,8 @@ class MultiStockBacktest:
         selector_method: str = "composite",
         max_single_position: float = 0.3,
         max_total_position: float = 0.8,
-        min_holding_days: int = 0  # 最短持股天数（买入后最少持有天数）
+        min_holding_days: int = 0,  # 最短持股天数（买入后最少持有天数）
+        stop_loss: float = 0.0  # 止损比例（负数，如-0.1表示亏损10%时止损，0表示不止损）
     ):
         """
         初始化多股票回测引擎
@@ -152,6 +154,7 @@ class MultiStockBacktest:
             max_single_position: 单只股票最大仓位
             max_total_position: 最大总仓位
             min_holding_days: 最短持股天数（买入后最少持有天数才能卖出，0表示不限制）
+            stop_loss: 止损比例（负数，如-0.1表示亏损10%时止损，0表示不止损）
         """
         self.initial_capital = initial_capital
         self.commission_rate = commission_rate
@@ -163,6 +166,7 @@ class MultiStockBacktest:
         self.max_single_position = max_single_position
         self.max_total_position = max_total_position
         self.min_holding_days = min_holding_days
+        self.stop_loss = stop_loss
 
         # 状态
         self.cash = initial_capital
@@ -262,6 +266,9 @@ class MultiStockBacktest:
 
             # 检查卖出信号
             self._check_sell_signals(date, current_prices)
+
+            # 检查止损
+            self._check_stop_loss(date, current_prices)
 
             # 如果需要调仓且有现金，选择新股票买入
             if (should_rebalance or needs_initial_position) and self.cash > 0:
@@ -373,6 +380,29 @@ class MultiStockBacktest:
         for symbol in positions_to_close:
             self._close_position(symbol, date, prices.get(symbol, 0), "卖出信号")
 
+    def _check_stop_loss(self, date, prices: Dict[str, float]):
+        """检查是否触发止损"""
+        if self.stop_loss == 0:
+            return  # 不启用止损
+
+        positions_to_close = []
+
+        for symbol, pos in self.positions.items():
+            # 计算当前收益率
+            if pos.avg_price > 0 and symbol in prices:
+                current_price = prices[symbol]
+                return_rate = (current_price - pos.avg_price) / pos.avg_price
+
+                # 检查是否触发止损（<= 止损比例，包含等于的情况）
+                # stop_loss 是负数（如 -0.1 表示亏损 10% 时止损）
+                # 当 return_rate = -0.1（亏损10%）时，-0.1 <= -0.1 为 True，触发止损
+                if return_rate <= self.stop_loss:
+                    positions_to_close.append(symbol)
+
+        # 执行止损平仓
+        for symbol in positions_to_close:
+            self._close_position(symbol, date, prices.get(symbol, 0), "止损")
+
     def _rebalance(self, date, prices: Dict[str, float]):
         """调仓：卖出不需要持仓的，买入新候选"""
         # 1. 选出新的候选股票
@@ -407,17 +437,32 @@ class MultiStockBacktest:
                 volatility = self._estimate_volatility(score.symbol)
                 candidate_data.append((score.symbol, score.composite_score, volatility))
 
-            # 分配仓位
+            # 分配仓位（基于总资产计算目标权重）
+            total_assets = self.cash + sum(p.market_value for p in self.positions.values())
             allocations = self.position_sizer.allocate(
                 candidate_data,
-                self.cash + sum(p.market_value for p in self.positions.values()),
+                total_assets,
                 prices
             )
 
-            # 执行买入
+            # 执行买入（扣除已有持仓，只买差额部分）
             for alloc in allocations:
-                if alloc.shares > 0 and alloc.symbol in prices:
-                    self._buy(alloc.symbol, date, prices[alloc.symbol], alloc.shares, "调仓买入")
+                if alloc.symbol in prices and alloc.weight > 0:
+                    # 计算目标持仓金额
+                    target_amount = total_assets * alloc.weight
+                    # 扣除已有持仓市值
+                    current_holding = self.positions[alloc.symbol].market_value if alloc.symbol in self.positions else 0
+                    buy_amount_needed = target_amount - current_holding
+
+                    if buy_amount_needed <= 0:
+                        # 已达目标仓位，不需要加仓
+                        continue
+
+                    # 根据需要买入的金额计算股数
+                    price = prices[alloc.symbol]
+                    buy_shares = int(buy_amount_needed / price / 100) * 100
+                    if buy_shares >= 100:
+                        self._buy(alloc.symbol, date, price, buy_shares, total_assets, "调仓买入")
 
             self.last_rebalance_day = self.trading_days
 
@@ -470,9 +515,19 @@ class MultiStockBacktest:
         date,
         price: float,
         quantity: int,
+        total_assets: float,
         reason: str = ""
     ):
-        """买入"""
+        """买入
+
+        Args:
+            symbol: 股票代码
+            date: 日期
+            price: 买入价格
+            quantity: 买入数量（股）
+            total_assets: 当前总资产（用于计算仓位限制）
+            reason: 买入原因
+        """
         if quantity <= 0 or price <= 0:
             return
 
@@ -484,6 +539,26 @@ class MultiStockBacktest:
         amount = price * quantity
         commission = amount * self.commission_rate
         total_cost = amount + commission
+
+        # 【关键修复】仓位限制基于 total_assets（当前总资产），不是 initial_capital
+        # 这样当总资产增长时，仓位限制也相应增长
+        current_holding_value = self.positions[symbol].market_value if symbol in self.positions else 0
+        max_single_amount = total_assets * self.max_single_position
+        available_buy_amount = max_single_amount - current_holding_value
+        if available_buy_amount <= 0:
+            # 已达仓位上限，不再买入
+            return
+        if amount > available_buy_amount:
+            # 超出限制，强制调整数量
+            quantity = int(available_buy_amount / price / 100) * 100
+            if quantity < 100:
+                return  # 剩余可买金额不足100股
+            amount = price * quantity
+            commission = amount * self.commission_rate
+            total_cost = amount + commission
+            print(f"[WARN] 仓位超限已修正: {symbol} 已持仓 {current_holding_value:,.0f} 元，"
+                  f"最大仓位 {max_single_amount:,.0f} 元，剩余可买 {available_buy_amount:,.0f} 元，"
+                  f"买入数量调整为 {quantity}，金额 {amount:,.0f} 元")
 
         if total_cost > self.cash:
             # 资金不足，调整数量
@@ -528,6 +603,10 @@ class MultiStockBacktest:
 
         # 创建/更新交易详情（配对用）
         self.trade_id_counter += 1
+        # 计算买入时的总资产（现金 + 持仓市值，不含本次买入）
+        current_positions_value = sum(p.market_value for p in self.positions.values())
+        entry_total_asset = self.cash + current_positions_value  # 这是买入前的总资产
+
         trade_detail = TradeDetail(
             trade_id=self.trade_id_counter,
             symbol=symbol,
@@ -536,6 +615,7 @@ class MultiStockBacktest:
             entry_quantity=quantity,
             entry_amount=amount,
             entry_commission=commission,
+            entry_total_asset=entry_total_asset,
             status="open"
         )
         # 如果同一股票有之前的持仓，先合并（简单处理：更新已有）
@@ -796,23 +876,31 @@ class MultiStockBacktest:
             else:
                 status_text = "已卖出"
 
+            # 计算买入金额占总资产的比例
+            position_ratio = (td.entry_amount / td.entry_total_asset * 100) if td.entry_total_asset > 0 else 0
+            # 告警：买入金额超过总资产的20%
+            over_limit = "![!]OVER" if position_ratio > 20 else ""
+
             records.append({
                 '交易ID': td.trade_id,
                 '股票': td.symbol,
                 '买入日期': str(td.entry_date)[:10] if td.entry_date else '',
-                '买入价格（元）': td.entry_price,
+                '总资产（元）': round(td.entry_total_asset, 2),
+                '买入价格（元）': round(td.entry_price, 2),
                 '买入数量': td.entry_quantity,
-                '买入金额（元）': td.entry_amount,
-                '买入手续费（元）': td.entry_commission,
+                '买入金额（元）': round(td.entry_amount, 2),
+                '仓位占比（%）': round(position_ratio, 2),
+                '告警': over_limit,
+                '买入手续费（元）': round(td.entry_commission, 2),
                 '卖出日期': str(td.exit_date)[:10] if td.exit_date and td.exit_date != '持有中' else '持有中',
-                '卖出价格（元）': td.exit_price if td.exit_date and td.exit_date != '持有中' else None,
+                '卖出价格（元）': round(td.exit_price, 2) if td.exit_date and td.exit_date != '持有中' else None,
                 '卖出数量': td.exit_quantity if td.exit_quantity > 0 else td.entry_quantity,
-                '卖出金额（元）': td.exit_amount if td.exit_amount > 0 else None,
-                '卖出手续费（元）': td.exit_commission if td.exit_commission > 0 else None,
+                '卖出金额（元）': round(td.exit_amount, 2) if td.exit_amount > 0 else None,
+                '卖出手续费（元）': round(td.exit_commission, 2) if td.exit_commission > 0 else None,
                 '持有天数': td.holding_days if td.holding_days > 0 else None,
-                '收益率（%）': td.return_rate * 100,
-                '净收益率（%）': td.net_return_rate * 100,
-                '收益金额（元）': td.profit,
+                '收益率（%）': round(td.return_rate * 100, 2),
+                '净收益率（%）': round(td.net_return_rate * 100, 2),
+                '收益金额（元）': round(td.profit, 2),
                 '状态': status_text
             })
 
