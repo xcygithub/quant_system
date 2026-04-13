@@ -415,19 +415,14 @@ class DataManager:
                 # 先检查数据库中最近days天的数据是否完整
                 existing_df = self._get_kline_from_db(symbol, start_date, end_date)
 
-                # 估算需要的交易日数量
-                start_dt = datetime.strptime(start_date, "%Y-%m-%d")
-                end_dt = datetime.now()
-                total_days = (end_dt - start_dt).days
-                estimated_trading_days = int(total_days * 0.4)
-
-                # 检查数据库中的数据是否足够（至少要有85%的估算交易日数据）
-                if len(existing_df) >= estimated_trading_days * 0.85:
-                    # 数据库中已有足够数据，跳过更新
-                    print(f"  {symbol} 数据库已有足够数据 ({len(existing_df)} 条)，跳过更新")
+                # 使用 _check_data_complete 检查数据完整性和时效性
+                if self._check_data_complete(existing_df, start_date, end_date):
+                    # 数据库中已有足够且足够新的数据，跳过更新
+                    latest_date = existing_df['date'].max() if not existing_df.empty else "无"
+                    print(f"  {symbol} 数据库已有最新数据 ({len(existing_df)} 条，最新: {latest_date})，跳过更新")
                     continue
 
-                # 数据不完整，从在线数据源获取
+                # 数据不完整或过时，从在线数据源获取
                 print(f"  {symbol} 数据库数据不完整 ({len(existing_df)} 条)，从在线源获取...")
                 df = self.data_source.get_daily_kline(symbol, start_date, end_date)
                 if not df.empty:
@@ -444,7 +439,14 @@ class DataManager:
         return updated_count
 
     def _check_data_complete(self, df: pd.DataFrame, start_date: str, end_date: str) -> bool:
-        """检查数据是否完整"""
+        """检查数据是否完整
+
+        完整性的判断标准：
+        1. 数据条数足够（>= 估算交易日 * 85%）
+        2. 最新数据日期足够新（>= 昨天）
+
+        只有同时满足两者，才认为数据完整。
+        """
         if df.empty:
             return False
 
@@ -460,9 +462,33 @@ class DataManager:
         # 粗略估算交易日数量（约为日历天的40%，因为扣除周末和假期）
         estimated_trading_days = int(total_days * 0.4)
 
-        # 如果数据条数 >= 估算的交易日数量 * 0.85，认为数据完整
-        # 这个阈值比较宽松，避免因假期等原因误判
-        return len(df) >= estimated_trading_days * 0.85
+        # 检查1：数据条数是否足够
+        if len(df) < estimated_trading_days * 0.85:
+            return False
+
+        # 检查2：最新数据日期是否包含最近一个交易日
+        # 关键：需要考虑周末（周末不是交易日）
+        # - 周一(0)：最近交易日是上周五（3天前）
+        # - 周日(6)：最近交易日是上周五（2天前）
+        # - 其他工作日：最近交易日是昨天（1天前）
+        today = datetime.now()
+        weekday = today.weekday()
+
+        if weekday == 0:  # 周一
+            days_back = 3  # 上周五
+        elif weekday == 6:  # 周日
+            days_back = 2  # 上周五
+        else:  # 周二~周六
+            days_back = 1  # 昨天
+
+        ref_date = (today - timedelta(days=days_back)).date()
+        latest_date = pd.to_datetime(df['date']).max().date()
+
+        if latest_date < ref_date:
+            # 数据过时，不完整
+            return False
+
+        return True
     
     def update_all_data(self):
         """更新所有数据"""
