@@ -22,6 +22,7 @@ from quant_system.strategy.moving_average import MovingAverageCrossStrategy, MAC
 from quant_system.strategy.multi_factor import MultiFactorStrategy, RSIStrategy
 from quant_system.portfolio.watchlist import WatchlistManager
 from quant_system.portfolio.multi_stock_backtest import MultiStockBacktest
+from quant_system.portfolio.signal_scanner import SignalScanner, ScanResult, ScanSignal
 
 # 页面配置
 st.set_page_config(
@@ -88,7 +89,7 @@ st.markdown('<h1 class="main-header">📈 量化交易系统</h1>', unsafe_allow
 
 # 创建标签页
 # 注意：tab2(自选股)会包含行情展示功能，所以原tab1(行情数据)可以简化或合并
-tab1, tab2, tab3, tab4 = st.tabs(["⭐ 自选股管理", "🎯 策略回测", "📈 绩效分析", "🔬 因子分析"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["⭐ 自选股管理", "🎯 策略回测", "📊 信号扫描", "📈 绩效分析", "🔬 因子分析"])
 
 # 辅助函数：获取最近交易日行情
 def get_latest_quote(symbol):
@@ -1283,13 +1284,242 @@ with tab2:
                         else:
                             st.info("本次回测无交易记录")
 
-# Tab 3: 绩效分析
+# Tab 3: 信号扫描
 with tab3:
+    st.header("📊 信号扫描")
+
+    # 顶部控制面板
+    col_ctrl1, col_ctrl2, col_ctrl3 = st.columns([1, 1, 1])
+
+    with col_ctrl1:
+        st.subheader("🎯 策略选择")
+        scan_strategy = st.selectbox(
+            "选择策略",
+            ["均线交叉 (MA Cross)", "MACD", "布林带 (Bollinger Bands)", "RSI", "多因子 (Multi-Factor)"],
+            key="scan_strategy"
+        )
+
+        # 策略参数
+        if scan_strategy == "均线交叉 (MA Cross)":
+            scan_fast_period = st.slider("短期均线", 5, 60, 20, key="scan_fast_period")
+            scan_slow_period = st.slider("长期均线", 10, 120, 60, key="scan_slow_period")
+            scan_params = {'fast_period': scan_fast_period, 'slow_period': scan_slow_period}
+        elif scan_strategy == "MACD":
+            scan_fast = st.slider("快线周期", 5, 20, 12, key="scan_fast")
+            scan_slow = st.slider("慢线周期", 15, 40, 26, key="scan_slow")
+            scan_signal = st.slider("信号线周期", 5, 15, 9, key="scan_signal_period")
+            scan_params = {'fast': scan_fast, 'slow': scan_slow, 'signal': scan_signal}
+        elif scan_strategy == "布林带 (Bollinger Bands)":
+            scan_bb_period = st.slider("周期", 10, 50, 20, key="scan_bb_period")
+            scan_std_dev = st.slider("标准差倍数", 1.0, 3.0, 2.0, 0.1, key="scan_std_dev")
+            scan_params = {'period': scan_bb_period, 'std_dev': scan_std_dev}
+        elif scan_strategy == "RSI":
+            scan_rsi_period = st.slider("RSI周期", 5, 30, 14, key="scan_rsi_period")
+            scan_oversold = st.slider("超卖阈值", 10, 40, 30, key="scan_oversold")
+            scan_overbought = st.slider("超买阈值", 60, 90, 70, key="scan_overbought")
+            scan_params = {'period': scan_rsi_period, 'oversold': scan_oversold, 'overbought': scan_overbought}
+        else:
+            scan_params = {}
+
+    with col_ctrl2:
+        st.subheader("📋 扫描范围")
+        # 获取自选股列表
+        all_watchlist_stocks = wl_manager.get_all_stocks()
+
+        if all_watchlist_stocks:
+            # 初始化选中状态
+            if 'scan_selected_stocks' not in st.session_state:
+                st.session_state['scan_selected_stocks'] = {s.symbol for s in all_watchlist_stocks}
+
+            # 全选/取消全选
+            col_sel_all, col_count = st.columns([1, 3])
+            with col_sel_all:
+                scan_select_all = st.checkbox("全选", value=True, key="scan_select_all")
+            with col_count:
+                st.caption(f"已选 {len(st.session_state['scan_selected_stocks'])} 只")
+
+            # 复选框列表
+            scan_selected = set()
+            for stock in all_watchlist_stocks:
+                is_selected = st.checkbox(
+                    f"{stock.symbol} {stock.name}",
+                    value=stock.symbol in st.session_state['scan_selected_stocks'],
+                    key=f"scan_cb_{stock.symbol}"
+                )
+                if is_selected:
+                    scan_selected.add(stock.symbol)
+
+            st.session_state['scan_selected_stocks'] = scan_selected
+        else:
+            st.info("暂无自选股，请先在【自选股管理】中添加")
+            scan_selected = set()
+
+        # 时间范围
+        scan_start_date = st.date_input("开始日期", value=pd.to_datetime("2024-01-01"), key="scan_start_date")
+        scan_end_date = st.date_input("结束日期", value=pd.to_datetime("2024-12-31"), key="scan_end_date")
+
+    with col_ctrl3:
+        st.subheader("🔍 信号筛选")
+        scan_signal_filter = st.radio(
+            "显示信号",
+            ["全部信号", "仅买入", "仅卖出", "仅持仓"],
+            horizontal=True,
+            key="scan_signal_filter"
+        )
+
+        # 信号类型映射
+        signal_filter_map = {
+            "全部信号": "all",
+            "仅买入": "buy",
+            "仅卖出": "sell",
+            "仅持仓": "hold"
+        }
+
+        st.divider()
+
+        # 扫描按钮
+        scan_button = st.button("🔍 开始扫描", type="primary", use_container_width=True)
+
+    # 显示扫描结果
+    if scan_button:
+        selected_stocks = st.session_state.get('scan_selected_stocks', set())
+
+        if not selected_stocks:
+            st.warning("请至少选择一只股票进行扫描")
+        else:
+            with st.spinner("正在扫描信号..."):
+                # 创建扫描器
+                scanner = SignalScanner()
+
+                # 执行扫描
+                scan_result = scanner.scan(
+                    symbols=list(selected_stocks),
+                    strategy_name=scan_strategy,
+                    strategy_params=scan_params,
+                    start_date=scan_start_date.strftime("%Y-%m-%d"),
+                    end_date=scan_end_date.strftime("%Y-%m-%d")
+                )
+
+                # 保存到session_state
+                st.session_state['scan_result'] = scan_result
+
+    # 显示扫描结果
+    if 'scan_result' in st.session_state and st.session_state['scan_result'] is not None:
+        scan_result = st.session_state['scan_result']
+
+        # 统计卡片
+        stat_col1, stat_col2, stat_col3, stat_col4 = st.columns(4)
+        with stat_col1:
+            st.metric("扫描股票数", scan_result.total_stocks)
+        with stat_col2:
+            st.metric("买入信号", scan_result.buy_signals, delta="🟢")
+        with stat_col3:
+            st.metric("卖出信号", scan_result.sell_signals, delta="🔴")
+        with stat_col4:
+            st.metric("持仓信号", scan_result.hold_signals, delta="⚪")
+
+        st.divider()
+
+        # 获取过滤后的信号
+        filtered_df = scan_result.get_filtered_signals(signal_filter_map.get(scan_signal_filter, "all"))
+        result_df = scan_result.to_dataframe()
+
+        # 应用筛选
+        if scan_signal_filter != "全部信号":
+            result_df = result_df[result_df['信号类型'] == signal_filter_map.get(scan_signal_filter, "all")]
+
+        if not result_df.empty:
+            # 格式化显示
+            st.subheader(f"📋 信号列表 ({len(result_df)} 只)")
+
+            # 颜色标记函数
+            def color_signal_type(val):
+                if val == 'buy':
+                    return 'color: #dc3545; font-weight: bold'  # 红色
+                elif val == 'sell':
+                    return 'color: #28a745; font-weight: bold'  # 绿色
+                return ''
+
+            def color_change(val):
+                if isinstance(val, (int, float)):
+                    if val > 0:
+                        return 'color: #dc3545'  # 红色涨
+                    elif val < 0:
+                        return 'color: #28a745'  # 绿色跌
+                return ''
+
+            # 应用样式
+            display_df = result_df.copy()
+            styled_df = display_df.style.applymap(color_signal_type, subset=['信号类型'])
+            styled_df = styled_df.applymap(color_change, subset=['涨跌幅'])
+            styled_df = styled_df.format({
+                '最新价': '{:.2f}',
+                '涨跌幅': '{:+.2f}%',
+                '信号强度': '{:.1f}'
+            }, na_rep='-')
+
+            st.dataframe(styled_df, use_container_width=True, hide_index=True)
+
+            # 导出按钮
+            if st.button("📥 导出信号到CSV"):
+                try:
+                    output_path = f"scan_signals_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+                    result_df.to_csv(output_path, index=False, encoding='utf-8-sig')
+                    st.success(f"✅ 信号已导出到: {output_path}")
+                except Exception as e:
+                    st.error(f"导出失败: {e}")
+
+            # 详细信号展示
+            st.divider()
+            st.subheader("📈 信号详情")
+
+            # 按信号类型分组展示
+            buy_signals_list = [s for s in filtered_df if s.signal_type == 'buy'] if isinstance(filtered_df, list) else []
+            sell_signals_list = [s for s in filtered_df if s.signal_type == 'sell'] if isinstance(filtered_df, list) else []
+
+            # 买入信号详情
+            if scan_signal_filter in ["全部信号", "仅买入"] and scan_result.buy_signals > 0:
+                st.markdown("**🟢 买入信号:**")
+                for sig in scan_result.signals:
+                    if sig.signal_type == 'buy':
+                        with st.expander(f"{sig.name} ({sig.symbol}) - ★{sig.strength:.1f}"):
+                            col_sig1, col_sig2 = st.columns([1, 2])
+                            with col_sig1:
+                                st.write(f"**价格:** {sig.price:.2f}")
+                                st.write(f"**涨跌幅:** {sig.change_pct:+.2f}%")
+                                st.write(f"**信号日期:** {sig.date}")
+                            with col_sig2:
+                                st.write(f"**策略:** {sig.strategy_name}")
+                                st.write(f"**原因:** {sig.reason}")
+                                if sig.indicators:
+                                    st.write(f"**指标:** {sig.indicators}")
+
+            # 卖出信号详情
+            if scan_signal_filter in ["全部信号", "仅卖出"] and scan_result.sell_signals > 0:
+                st.markdown("**🔴 卖出信号:**")
+                for sig in scan_result.signals:
+                    if sig.signal_type == 'sell':
+                        with st.expander(f"{sig.name} ({sig.symbol}) - ★{sig.strength:.1f}"):
+                            col_sig1, col_sig2 = st.columns([1, 2])
+                            with col_sig1:
+                                st.write(f"**价格:** {sig.price:.2f}")
+                                st.write(f"**涨跌幅:** {sig.change_pct:+.2f}%")
+                                st.write(f"**信号日期:** {sig.date}")
+                            with col_sig2:
+                                st.write(f"**策略:** {sig.strategy_name}")
+                                st.write(f"**原因:** {sig.reason}")
+                                if sig.indicators:
+                                    st.write(f"**指标:** {sig.indicators}")
+        else:
+            st.info("没有符合条件的信号")
+
+# Tab 4: 绩效分析
+with tab4:
     st.header("📈 绩效分析")
     st.info("请选择要分析的回测结果")
 
-# Tab 4: 因子分析
-with tab4:
+# Tab 5: 因子分析
+with tab5:
     st.header("🔬 因子分析")
     st.info("因子分析功能开发中...")
 

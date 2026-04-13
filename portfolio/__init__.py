@@ -1,11 +1,12 @@
 """
 Portfolio - 组合管理模块
-包含自选股管理、选股排序、仓位分配、多股票回测等功能
+包含自选股管理、选股排序、仓位分配、多股票回测、信号扫描等功能
 """
 from .watchlist import WatchlistManager, StockInfo, get_watchlist_manager
 from .selector import StockSelector, StockScore, ScoringMethod, create_selector
 from .position_sizer import PositionSizer, PositionResult, PositionMethod, create_position_sizer
 from .multi_stock_backtest import MultiStockBacktest, run_multi_stock_backtest, PortfolioPosition, TradeRecord
+from .signal_scanner import SignalScanner, ScanResult, ScanSignal, scan_watchlist
 
 __all__ = [
     # 自选股管理
@@ -26,5 +27,10 @@ __all__ = [
     'MultiStockBacktest',
     'run_multi_stock_backtest',
     'PortfolioPosition',
-    'TradeRecord'
+    'TradeRecord',
+    # 信号扫描
+    'SignalScanner',
+    'ScanResult',
+    'ScanSignal',
+    'scan_watchlist'
 ]
