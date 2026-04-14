@@ -85,21 +85,191 @@ class DataManager:
             )
         ''')
         
-        # 财务数据表
+        # ========== 财务数据表（新版）==========
+
+        # 1. 盈利能力数据（利润表）
         cursor.execute('''
-            CREATE TABLE IF NOT EXISTS financial_data (
-                symbol TEXT,
-                report_date TEXT,
+            CREATE TABLE IF NOT EXISTS profit_data (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                symbol TEXT NOT NULL,
+                report_date TEXT NOT NULL,
+                report_type TEXT DEFAULT 'Q',
                 eps REAL,
-                bvps REAL,
                 roe REAL,
-                revenue REAL,
+                roe_avg REAL,
+                net_profit_ratio REAL,
+                gross_profit_rate REAL,
+                business_income REAL,
+                operating_profit REAL,
                 net_profit REAL,
-                debt_ratio REAL,
-                PRIMARY KEY (symbol, report_date)
+                total_profit REAL,
+                inv_net_profit REAL,
+                pub_date TEXT,
+                update_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(symbol, report_date)
             )
         ''')
-        
+
+        # 2. 资产负债数据（资产负债表）
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS balance_data (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                symbol TEXT NOT NULL,
+                report_date TEXT NOT NULL,
+                report_type TEXT DEFAULT 'Q',
+                total_assets REAL,
+                total_liabilities REAL,
+                total_equity REAL,
+                debt_ratio REAL,
+                equity_ratio REAL,
+                current_assets REAL,
+                fixed_assets REAL,
+                intangible_assets REAL,
+                current_ratio REAL,
+                quick_ratio REAL,
+                update_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(symbol, report_date)
+            )
+        ''')
+
+        # 3. 现金流量数据
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS cash_flow_data (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                symbol TEXT NOT NULL,
+                report_date TEXT NOT NULL,
+                report_type TEXT DEFAULT 'Q',
+                oper_cash_flow REAL,
+                invest_cash_flow REAL,
+                finance_cash_flow REAL,
+                cash_equil_change REAL,
+                end_cash REAL,
+                oper_cash_flow_ps REAL,
+                update_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(symbol, report_date)
+            )
+        ''')
+
+        # 4. 杜邦分析数据
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS dupont_data (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                symbol TEXT NOT NULL,
+                report_date TEXT NOT NULL,
+                report_type TEXT DEFAULT 'Q',
+                roe REAL,
+                asset_turnover REAL,
+                equity_multiplier REAL,
+                net_profit_margin REAL,
+                sales_to_grs REAL,
+                update_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(symbol, report_date)
+            )
+        ''')
+
+        # 5. 成长能力数据
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS growth_data (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                symbol TEXT NOT NULL,
+                report_date TEXT NOT NULL,
+                report_type TEXT DEFAULT 'Q',
+                profit_grow REAL,
+                profit_grow_ratio REAL,
+                asset_to_income REAL,
+                update_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(symbol, report_date)
+            )
+        ''')
+
+        # 6. 营运能力数据
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS operation_data (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                symbol TEXT NOT NULL,
+                report_date TEXT NOT NULL,
+                report_type TEXT DEFAULT 'Q',
+                inv_turnover REAL,
+                ar_turnover REAL,
+                ap_turnover REAL,
+                total_asset_turnover REAL,
+                current_asset_turnover REAL,
+                fixed_asset_turnover REAL,
+                update_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(symbol, report_date)
+            )
+        ''')
+
+        # 7. 偿债能力数据
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS debtpaying_data (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                symbol TEXT NOT NULL,
+                report_date TEXT NOT NULL,
+                report_type TEXT DEFAULT 'Q',
+                current_ratio REAL,
+                quick_ratio REAL,
+                cash_ratio REAL,
+                update_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(symbol, report_date)
+            )
+        ''')
+
+        # 8. 估值数据
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS valuation_data (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                symbol TEXT NOT NULL,
+                trade_date TEXT NOT NULL,
+                pe REAL,
+                pe_ttm REAL,
+                pb REAL,
+                ps REAL,
+                pcf REAL,
+                market_cap REAL,
+                float_market_cap REAL,
+                total_shares REAL,
+                float_shares REAL,
+                update_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(symbol, trade_date)
+            )
+        ''')
+
+        # 9. 财务因子缓存表
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS factor_cache (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                symbol TEXT NOT NULL,
+                trade_date TEXT NOT NULL,
+                factor_name TEXT NOT NULL,
+                factor_value REAL,
+                update_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(symbol, trade_date, factor_name)
+            )
+        ''')
+
+        # 10. 数据更新日志
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS update_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                update_type TEXT NOT NULL,
+                symbol TEXT,
+                status TEXT DEFAULT 'running',
+                start_time TIMESTAMP,
+                end_time TIMESTAMP,
+                records_updated INTEGER DEFAULT 0,
+                error_message TEXT
+            )
+        ''')
+
+        # ========== 创建索引 ==========
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_profit_symbol_date ON profit_data(symbol, report_date)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_balance_symbol_date ON balance_data(symbol, report_date)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_cash_symbol_date ON cash_flow_data(symbol, report_date)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_dupont_symbol_date ON dupont_data(symbol, report_date)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_valuation_symbol_date ON valuation_data(symbol, trade_date)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_factor_cache_symbol_date ON factor_cache(symbol, trade_date)')
+
         conn.commit()
         conn.close()
     
@@ -509,6 +679,87 @@ class DataManager:
             self.get_index_kline(idx, start_date, end_date)
         
         print("数据更新完成")
+
+    # ========== 财务数据便捷方法 ==========
+
+    def get_financial_manager(self):
+        """
+        获取财务数据管理器
+
+        Returns:
+            FinancialDataManager 实例
+        """
+        from .financial_data_manager import FinancialDataManager
+        return FinancialDataManager(self.db_path)
+
+    def update_financial_data(self, symbol: str,
+                             data_types: List[str] = None) -> Dict[str, int]:
+        """
+        更新财务数据（便捷方法）
+
+        Args:
+            symbol: 股票代码，如 '000001.SZ'
+            data_types: 数据类型列表，如 ['profit', 'balance', 'cash', 'dupont']
+
+        Returns:
+            更新记录数
+        """
+        fdm = self.get_financial_manager()
+        result = fdm.update_single_stock(symbol, data_types)
+        fdm.close()
+        return result
+
+    def get_financial_data(self, symbol: str,
+                          data_type: str = 'profit',
+                          start_date: str = None) -> pd.DataFrame:
+        """
+        获取财务数据（便捷方法）
+
+        Args:
+            symbol: 股票代码
+            data_type: 数据类型 ('profit'/'balance'/'cash'/'dupont'/'growth'/'operation'/'debtpaying')
+            start_date: 起始日期
+
+        Returns:
+            DataFrame
+        """
+        fdm = self.get_financial_manager()
+        df = fdm.get_financial_data(symbol, data_type, start_date)
+        fdm.close()
+        return df
+
+    def get_valuation(self, symbol: str,
+                      trade_date: str = None) -> Optional[Dict]:
+        """
+        获取估值数据（便捷方法）
+
+        Args:
+            symbol: 股票代码
+            trade_date: 交易日期，默认最新
+
+        Returns:
+            Dict or None
+        """
+        fdm = self.get_financial_manager()
+        val = fdm.get_valuation(symbol, trade_date)
+        fdm.close()
+        return val
+
+    def get_profit(self, symbol: str, start_date: str = None) -> pd.DataFrame:
+        """获取利润表数据"""
+        return self.get_financial_data(symbol, 'profit', start_date)
+
+    def get_balance(self, symbol: str, start_date: str = None) -> pd.DataFrame:
+        """获取资产负债表数据"""
+        return self.get_financial_data(symbol, 'balance', start_date)
+
+    def get_cash_flow(self, symbol: str, start_date: str = None) -> pd.DataFrame:
+        """获取现金流量表数据"""
+        return self.get_financial_data(symbol, 'cash', start_date)
+
+    def get_dupont(self, symbol: str, start_date: str = None) -> pd.DataFrame:
+        """获取杜邦分析数据"""
+        return self.get_financial_data(symbol, 'dupont', start_date)
 
 
 if __name__ == "__main__":

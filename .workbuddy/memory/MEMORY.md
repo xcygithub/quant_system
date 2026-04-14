@@ -201,4 +201,43 @@
 - `_check_data_complete`：增加日期时效性检查（考虑周末）
 - `update_recent_data`：使用 `_check_data_complete` 替代内联检查
 
+## Phase 1 完成：Baostock 财务数据获取与存储（2026-04-14）
+
+### 新增文件
+1. `data/financial_data_source.py` - Baostock 财务数据获取器
+   - 支持 7 种财务数据类型获取
+   - 内置 API 限流控制（每秒1次）
+   - 代码格式自动转换（000001.SZ ↔ sz.000001）
+
+2. `data/financial_data_saver.py` - 财务数据持久化
+   - 批量保存 DataFrame 到 SQLite
+   - INSERT OR REPLACE 避免重复
+   - 自动判断报表类型（年报/中报/季报）
+
+3. `data/financial_data_manager.py` - 统一接口
+   - update_single_stock() / batch_update() 更新数据
+   - get_financial_data() / get_valuation() 读取数据
+   - get_data_freshness() 数据新鲜度检查
+
+### 数据库扩展
+新增 8 张财务数据表：
+- profit_data（利润表）、balance_data（资产负债表）
+- cash_flow_data（现金流量表）、dupont_data（杜邦分析）
+- growth_data（成长能力）、operation_data（营运能力）
+- debtpaying_data（偿债能力）、valuation_data（估值数据）
+- factor_cache（因子缓存）、update_log（更新日志）
+
+### 与 DataManager 集成
+- `DataManager.get_financial_manager()` 获取财务管理器
+- `DataManager.get_profit/get_balance/get_cash_flow/get_dupont()` 便捷方法
+- `DataManager.get_valuation()` 获取估值
+- `DataManager.update_financial_data()` 更新财务数据
+
+### Baostock API 字段映射
+- query_profit_data: statDate, roeAvg, npMargin, gpMargin, netProfit, epsTTM, MBRevenue
+- query_balance_data: statDate, totalAsset, totalLiab, equity
+- query_cash_flow_data: statDate, operCashFlow, investCashFlow, financeCashFlow
+- query_dupont_data: statDate, roe, assetStoTurn, equityMultipler, profitToSales
+- query_stocks: code, code_name, tradeDate, pe, pb, marketCap, totalShares
+
 
