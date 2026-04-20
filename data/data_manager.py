@@ -270,6 +270,68 @@ class DataManager:
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_valuation_symbol_date ON valuation_data(symbol, trade_date)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_factor_cache_symbol_date ON factor_cache(symbol, trade_date)')
 
+        # ========== 因子数据表 ==========
+
+        # 1. 每日因子值缓存表
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS factor_values (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                symbol TEXT NOT NULL,
+                trade_date TEXT NOT NULL,
+                factor_name TEXT NOT NULL,
+                factor_value REAL,
+                update_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(symbol, trade_date, factor_name)
+            )
+        ''')
+
+        # 2. 因子元数据表
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS factor_metadata (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                factor_name TEXT NOT NULL UNIQUE,
+                factor_category TEXT,
+                factor_direction TEXT,
+                description TEXT,
+                formula TEXT,
+                update_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+
+        # 插入默认因子元数据
+        default_factors = [
+            ('pe', 'valuation', 'negative', '市盈率', 'price / eps'),
+            ('pe_ttm', 'valuation', 'negative', '滚动市盈率', 'price / eps_ttm'),
+            ('pb', 'valuation', 'negative', '市净率', 'price / book_value_per_share'),
+            ('ps', 'valuation', 'negative', '市销率', 'price / revenue_per_share'),
+            ('pcf', 'valuation', 'negative', '市现率', 'price / cash_flow_per_share'),
+            ('roe', 'profitability', 'positive', '净资产收益率', 'net_profit / equity'),
+            ('roe_avg', 'profitability', 'positive', '平均净资产收益率', 'roe_avg'),
+            ('roa', 'profitability', 'positive', '资产收益率', 'net_profit / total_assets'),
+            ('gross_margin', 'profitability', 'positive', '毛利率', 'gross_profit / revenue'),
+            ('net_margin', 'profitability', 'positive', '净利率', 'net_profit / revenue'),
+            ('revenue_growth', 'growth', 'positive', '营收增长率', '(revenue_now - revenue_prev) / revenue_prev'),
+            ('profit_growth', 'growth', 'positive', '利润增长率', '(profit_now - profit_prev) / profit_prev'),
+            ('equity_growth', 'growth', 'positive', '净资产增长率', '(equity_now - equity_prev) / equity_prev'),
+            ('debt_ratio', 'structure', 'neutral', '资产负债率', 'total_liabilities / total_assets'),
+            ('current_ratio', 'structure', 'positive', '流动比率', 'current_assets / current_liabilities'),
+            ('quick_ratio', 'structure', 'positive', '速动比率', '(current_assets - inventory) / current_liabilities'),
+            ('cash_to_profit', 'cashflow', 'positive', '经营现金流/净利润', 'oper_cash_flow / net_profit'),
+            ('fcf', 'cashflow', 'positive', '自由现金流', 'oper_cash_flow - capex'),
+            ('cash_yield', 'cashflow', 'positive', '现金市值比', 'oper_cash_flow / market_cap'),
+            ('asset_turnover', 'profitability', 'positive', '资产周转率', 'revenue / total_assets'),
+            ('equity_multiplier', 'structure', 'neutral', '权益乘数', 'total_assets / equity'),
+            ('pb_roe', 'derived', 'positive', 'PB/ROE因子', 'pb / roe'),
+            ('pe_growth', 'derived', 'positive', 'PE增长因子', 'pe / profit_growth'),
+            ('altman_z', 'derived', 'positive', 'Altman Z-Score', 'Z-Score破产预警模型'),
+        ]
+
+        cursor.executemany('''
+            INSERT OR IGNORE INTO factor_metadata
+            (factor_name, factor_category, factor_direction, description, formula)
+            VALUES (?, ?, ?, ?, ?)
+        ''', default_factors)
+
         conn.commit()
         conn.close()
     

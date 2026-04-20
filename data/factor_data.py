@@ -241,7 +241,47 @@ class FactorData:
         result['mean_reversion_20'] = self.mean_reversion(20)
         result['trend_strength_20'] = self.trend_strength(20)
         result['volatility_regime'] = self.volatility_regime()
-        
+
+        return result
+
+    def merge_fundamental_factors(self, fundamental_df: pd.DataFrame,
+                                  on: str = 'date') -> pd.DataFrame:
+        """
+        合并基本面因子数据
+
+        Args:
+            fundamental_df: 基本面因子DataFrame，需包含与self.df相同的日期索引或date列
+            on: 合并的键列名
+
+        Returns:
+            合并后的DataFrame
+        """
+        result = self.df.copy()
+
+        # 确保日期格式一致
+        if 'date' in result.columns:
+            result['date'] = pd.to_datetime(result['date']).dt.strftime('%Y-%m-%d')
+        if 'date' in fundamental_df.columns:
+            fundamental_df = fundamental_df.copy()
+            fundamental_df['date'] = pd.to_datetime(fundamental_df['date']).dt.strftime('%Y-%m-%d')
+
+        # 合并
+        factor_cols = [c for c in fundamental_df.columns if c not in [on, 'symbol', 'trade_date']]
+        for col in factor_cols:
+            if col in result.columns:
+                continue  # 避免覆盖已有列
+            result[col] = np.nan
+
+        # 按日期匹配（取最近的基本面数据）
+        for date in result['date'].unique():
+            mask = result['date'] == date
+            for col in factor_cols:
+                if col in fundamental_df.columns:
+                    fund_vals = fundamental_df[fundamental_df['date'] == date][col]
+                    if not fund_vals.empty:
+                        val = fund_vals.iloc[0]
+                        result.loc[mask, col] = val
+
         return result
 
 

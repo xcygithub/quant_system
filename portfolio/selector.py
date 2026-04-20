@@ -28,9 +28,19 @@ class StockScore:
     signal_score: float = 0.0       # 信号强度得分
     volatility_score: float = 0.0    # 波动率得分
     liquidity_score: float = 0.0    # 流动性得分
+    # 基本面打分维度
+    valuation_score: float = 0.0   # 估值得分
+    profitability_score: float = 0.0  # 盈利得分
+    growth_score: float = 0.0       # 成长得分
+    financial_quality_score: float = 0.0  # 财务质量得分
     composite_score: float = 0.0    # 综合得分
     signal_type: str = "hold"           # 当前信号类型 (buy/sell/hold)
     signal_strength: float = 0.0    # 信号强度 (0-1)
+    # 基本面因子原始值
+    pe: float = 0.0
+    pb: float = 0.0
+    roe: float = 0.0
+    revenue_growth: float = 0.0
 
     @property
     def rank(self) -> int:
@@ -66,15 +76,23 @@ class StockSelector:
         Args:
             method: 选股方法
             weights: 各维度权重 (默认等权重)
+                     技术维度: momentum, signal, volatility, liquidity
+                     基本面维度: valuation, profitability, growth, financial_quality
             top_n: 选取前N只股票
             min_score: 最低得分门槛
         """
         self.method = method
         self.weights = weights or {
-            'momentum': 0.3,
-            'signal': 0.3,
-            'volatility': 0.2,
-            'liquidity': 0.2
+            # 技术维度
+            'momentum': 0.15,
+            'signal': 0.15,
+            'volatility': 0.1,
+            'liquidity': 0.1,
+            # 基本面维度
+            'valuation': 0.2,
+            'profitability': 0.15,
+            'growth': 0.1,
+            'financial_quality': 0.05
         }
         self.top_n = top_n
         self.min_score = min_score
@@ -83,7 +101,8 @@ class StockSelector:
         self,
         stock_data: Dict[str, pd.DataFrame],
         signals: Dict[str, pd.Series] = None,
-        prices: Dict[str, pd.Series] = None
+        prices: Dict[str, pd.Series] = None,
+        fundamental_factors: pd.DataFrame = None
     ) -> List[StockScore]:
         """
         对多只股票进行打分
@@ -94,6 +113,8 @@ class StockSelector:
             signals: 信号字典 {symbol: signal_series}
                      signal为 1(买入), 0(持有), -1(卖出)
             prices: 价格字典 {symbol: price_series}
+            fundamental_factors: 基本面因子DataFrame
+                               index为symbol，columns为因子名
 
         Returns:
             排序后的股票评分列表
@@ -104,21 +125,33 @@ class StockSelector:
             if df.empty or len(df) < 10:
                 continue
 
+            # 获取基本面因子
+            fund_data = None
+            if fundamental_factors is not None and symbol in fundamental_factors.index:
+                fund_data = fundamental_factors.loc[symbol].to_dict()
+
             score = self._calculate_stock_score(
                 symbol=symbol,
                 df=df,
                 signal=signals.get(symbol) if signals else None,
-                price=prices.get(symbol) if prices else None
+                price=prices.get(symbol) if prices else None,
+                fundamental_data=fund_data
             )
             scores.append(score)
 
         # 计算综合得分
         for score in scores:
             score.composite_score = (
-                score.momentum_score * self.weights.get('momentum', 0.25) +
-                score.signal_score * self.weights.get('signal', 0.25) +
-                score.volatility_score * self.weights.get('volatility', 0.25) +
-                score.liquidity_score * self.weights.get('liquidity', 0.25)
+                # 技术维度
+                score.momentum_score * self.weights.get('momentum', 0.15) +
+                score.signal_score * self.weights.get('signal', 0.15) +
+                score.volatility_score * self.weights.get('volatility', 0.1) +
+                score.liquidity_score * self.weights.get('liquidity', 0.1) +
+                # 基本面维度
+                score.valuation_score * self.weights.get('valuation', 0.2) +
+                score.profitability_score * self.weights.get('profitability', 0.15) +
+                score.growth_score * self.weights.get('growth', 0.1) +
+                score.financial_quality_score * self.weights.get('financial_quality', 0.05)
             )
 
         # 按综合得分排序
@@ -135,7 +168,8 @@ class StockSelector:
         symbol: str,
         df: pd.DataFrame,
         signal: pd.Series = None,
-        price: pd.Series = None
+        price: pd.Series = None,
+        fundamental_data: Dict = None
     ) -> StockScore:
         """计算单只股票的各维度得分"""
 
@@ -164,7 +198,64 @@ class StockSelector:
         liquidity = self._calculate_liquidity(df)
         score.liquidity_score = liquidity
 
+        # 5. 基本面得分
+        if fundamental_data:
+            self._calculate_fundamental_scores(score, fundamental_data)
+
         return score
+
+    def _calculate_fundamental_scores(self, score: StockScore,
+                                      fund_data: Dict) -> None:
+        """
+        计算基本面得分
+
+        Args:
+            score: StockScore对象
+            fund_data: 基本面因子字典
+        """
+        # 保存原始因子值
+        score.pe = fund_data.get('pe', 0) or 0
+        score.pb = fund_data.get('pb', 0) or 0
+        score.roe = fund_data.get('roe', 0) or 0
+        score.revenue_growth = fund_data.get('revenue_growth', 0) or 0
+
+        # 1. 估值得分（低PE/PB得高分，0-100）
+        pe = score.pe
+        pb = score.pb
+        if pe > 0:
+            # PE倒数作为得分（低PE高得分）
+            pe_score = max(0, min(100, 100 - (pe - 10) * 5))  # PE=10时80分，PE=30时0分
+        else:
+            pe_score = 50  # 无数据给50分
+
+        if pb > 0:
+            pb_score = max(0, min(100, 100 - (pb - 1) * 50))  # PB=1时50分，PB=3时0分
+        else:
+            pb_score = 50
+
+        score.valuation_score = (pe_score * 0.6 + pb_score * 0.4)  # PE权重更高
+
+        # 2. 盈利得分（高ROE得高分）
+        roe = score.roe
+        if roe > 0:
+            score.profitability_score = max(0, min(100, roe * 500))  # ROE=20%时100分
+        else:
+            score.profitability_score = 30  # 无ROE或负ROE给低分
+
+        # 3. 成长得分（高增长得高分）
+        growth = score.revenue_growth
+        if growth is not None:
+            # 增长率标准化到0-100
+            score.growth_score = max(0, min(100, (growth + 0.5) * 100))  # -50%~+100%映射到0-100
+        else:
+            score.growth_score = 50  # 无数据给50分
+
+        # 4. 财务质量得分（经营现金流/净利润）
+        cash_to_profit = fund_data.get('cash_to_profit', 0) or 0
+        if cash_to_profit > 0:
+            score.financial_quality_score = max(0, min(100, cash_to_profit * 100))  # >1时100分
+        else:
+            score.financial_quality_score = 50  # 无数据给50分
 
     def _calculate_momentum(self, df: pd.DataFrame, periods: List[int] = None) -> float:
         """

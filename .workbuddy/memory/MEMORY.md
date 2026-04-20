@@ -240,4 +240,42 @@
 - query_dupont_data: statDate, roe, assetStoTurn, equityMultipler, profitToSales
 - query_stocks: code, code_name, tradeDate, pe, pb, marketCap, totalShares
 
+## Phase 2 完成：基本面因子计算与预处理（2026-04-19）
+
+### 新增文件
+1. `strategy/fundamental_factors.py` - 基本面因子计算器
+   - 5大类因子：估值(PE/PB/PS/PCF)、盈利(ROE/ROA/毛利率/净利率)
+   - 成长(营收增长/利润增长/净资产增长)、财务结构、现金流
+   - 衍生因子：PB_ROE、PE_Growth、Altman_Z
+   - `calculate_all_factors()` 单股票因子计算
+   - `get_factor_panel()` 多股票因子面板
+
+2. `strategy/factor_preprocessor.py` - 因子预处理器
+   - 缺失值处理（中位数/均值/行业中位数）
+   - Winsorization缩尾处理（±3σ）
+   - 标准化（Z-score/Rank/MinMax/MAD）
+   - 中性化（行业中性/市值中性/风格中性）
+
+3. `strategy/factor_neutralizer.py` - 因子中性化（集成到preprocessor）
+
+### 数据库扩展
+- `factor_values` 表：每日因子值缓存
+- `factor_metadata` 表：因子元数据（24个预设因子）
+
+### 扩展现有模块
+1. `data/data_manager.py`：
+   - 新增 factor_values、factor_metadata 表
+   - 插入24个默认因子元数据
+
+2. `data/factor_data.py`：
+   - 新增 `merge_fundamental_factors()` 方法
+
+3. `portfolio/selector.py`：
+   - StockScore 新增基本面打分维度（valuation/profitability/growth/financial_quality）
+   - 新增 `fundamental_factors` 参数
+   - 新增 `_calculate_fundamental_scores()` 方法
+
+4. `strategy/__init__.py`：
+   - 导出 FundamentalFactors、FactorPreprocessor、FactorNeutralizer
+
 

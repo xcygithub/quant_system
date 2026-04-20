@@ -14,7 +14,7 @@ class MovingAverageCrossStrategy(Strategy):
     当短期均线上穿长期均线时买入，下穿时卖出
     """
     
-    def __init__(self, params: Dict[str, Any] = None):
+    def __init__(tself, params: Dict[str, Any] = None):
         """
         初始化
         
