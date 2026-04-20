@@ -23,6 +23,7 @@ from quant_system.strategy.multi_factor import MultiFactorStrategy, RSIStrategy
 from quant_system.portfolio.watchlist import WatchlistManager
 from quant_system.portfolio.multi_stock_backtest import MultiStockBacktest
 from quant_system.portfolio.signal_scanner import SignalScanner, ScanResult, ScanSignal
+from quant_system.web.factor_backtest_page import render_factor_backtest_page
 
 # 页面配置
 st.set_page_config(
@@ -88,8 +89,15 @@ wl_manager = get_watchlist_manager()
 st.markdown('<h1 class="main-header">📈 量化交易系统</h1>', unsafe_allow_html=True)
 
 # 创建标签页
-# 注意：tab2(自选股)会包含行情展示功能，所以原tab1(行情数据)可以简化或合并
-tab1, tab2, tab3, tab4, tab5 = st.tabs(["⭐ 自选股管理", "🎯 策略回测", "📊 信号扫描", "📈 绩效分析", "🔬 因子分析"])
+# 6个标签页：自选股管理、策略回测、多因子回测、信号扫描、绩效分析、因子分析
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+    "⭐ 自选股管理",
+    "🎯 策略回测",
+    "📊 多因子回测",
+    "📈 信号扫描",
+    "📉 绩效分析",
+    "🔬 因子分析"
+])
 
 # 辅助函数：获取最近交易日行情
 def get_latest_quote(symbol):
@@ -1284,9 +1292,13 @@ with tab2:
                         else:
                             st.info("本次回测无交易记录")
 
-# Tab 3: 信号扫描
+# Tab 3: 多因子回测
 with tab3:
-    st.header("📊 信号扫描")
+    render_factor_backtest_page(dm, wl_manager)
+
+# Tab 4: 信号扫描
+with tab4:
+    st.header("📈 信号扫描")
 
     # 顶部控制面板
     col_ctrl1, col_ctrl2, col_ctrl3 = st.columns([1, 1, 1])
@@ -1513,13 +1525,13 @@ with tab3:
         else:
             st.info("没有符合条件的信号")
 
-# Tab 4: 绩效分析
-with tab4:
-    st.header("📈 绩效分析")
+# Tab 5: 绩效分析
+with tab5:
+    st.header("📉 绩效分析")
     st.info("请选择要分析的回测结果")
 
-# Tab 5: 因子分析
-with tab5:
+# Tab 6: 因子分析
+with tab6:
     st.header("🔬 因子分析")
     st.info("因子分析功能开发中...")
 

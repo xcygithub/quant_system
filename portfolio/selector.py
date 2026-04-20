@@ -401,6 +401,194 @@ class StockSelector:
         n = top_n if top_n is not None else self.top_n
         return filtered[:n]
 
+    def batch_score_from_factors(
+        self,
+        factor_panel: pd.DataFrame,
+        factor_weights: Dict[str, float] = None
+    ) -> List[StockScore]:
+        """
+        从因子面板批量打分
+
+        Args:
+            factor_panel: DataFrame(index=symbol, columns=因子值)
+            factor_weights: 因子权重 {'factor_name': weight}
+
+        Returns:
+            股票评分列表
+        """
+        if factor_panel.empty:
+            return []
+
+        scores = []
+        factor_cols = [c for c in factor_panel.columns
+                      if c not in ['symbol', 'trade_date', 'name']]
+
+        for symbol in factor_panel.index:
+            score = StockScore(symbol=symbol)
+
+            # 获取该股票的所有因子值
+            factor_data = factor_panel.loc[symbol].to_dict()
+
+            # 计算基本面得分
+            self._calculate_fundamental_scores(score, factor_data)
+
+            # 如果有自定义权重，重新计算综合得分
+            if factor_weights:
+                score.composite_score = (
+                    score.valuation_score * factor_weights.get('valuation', 0.2) +
+                    score.profitability_score * factor_weights.get('profitability', 0.2) +
+                    score.growth_score * factor_weights.get('growth', 0.15) +
+                    score.momentum_score * factor_weights.get('momentum', 0.15) +
+                    score.signal_score * factor_weights.get('signal', 0.1) +
+                    score.volatility_score * factor_weights.get('volatility', 0.1) +
+                    score.liquidity_score * factor_weights.get('liquidity', 0.1)
+                )
+            else:
+                # 使用默认权重计算综合得分
+                score.composite_score = (
+                    score.momentum_score * self.weights.get('momentum', 0.15) +
+                    score.signal_score * self.weights.get('signal', 0.15) +
+                    score.volatility_score * self.weights.get('volatility', 0.1) +
+                    score.liquidity_score * self.weights.get('liquidity', 0.1) +
+                    score.valuation_score * self.weights.get('valuation', 0.2) +
+                    score.profitability_score * self.weights.get('profitability', 0.15) +
+                    score.growth_score * self.weights.get('growth', 0.1) +
+                    score.financial_quality_score * self.weights.get('financial_quality', 0.05)
+                )
+
+            scores.append(score)
+
+        # 排序
+        scores.sort(key=lambda x: x.composite_score, reverse=True)
+
+        # 设置排名
+        for i, score in enumerate(scores):
+            score.rank = i + 1
+
+        return scores
+
+    def get_top_candidates(
+        self,
+        scores: List[StockScore],
+        n: int = 10,
+        by_factor: str = None  # 按某因子排序
+    ) -> List[StockScore]:
+        """
+        获取最佳候选
+
+        Args:
+            scores: 股票评分列表
+            n: 返回前N只
+            by_factor: 按某因子排序 (valuation/profitability/growth/momentum)
+
+        Returns:
+            股票评分列表
+        """
+        if by_factor:
+            factor_map = {
+                'valuation': 'valuation_score',
+                'profitability': 'profitability_score',
+                'growth': 'growth_score',
+                'momentum': 'momentum_score',
+                'liquidity': 'liquidity_score'
+            }
+            sort_key = factor_map.get(by_factor, 'composite_score')
+            sorted_scores = sorted(scores, key=lambda x: getattr(x, sort_key, 0), reverse=True)
+        else:
+            sorted_scores = sorted(scores, key=lambda x: x.composite_score, reverse=True)
+
+        return sorted_scores[:n]
+
+    def export_scores(
+        self,
+        scores: List[StockScore],
+        path: str,
+        include_raw_factors: bool = True
+    ) -> None:
+        """
+        导出评分结果到CSV
+
+        Args:
+            scores: 股票评分列表
+            path: 保存路径
+            include_raw_factors: 是否包含原始因子值
+        """
+        rows = []
+        for score in scores:
+            row = {
+                'rank': score.rank,
+                'symbol': score.symbol,
+                'name': score.name,
+                'composite_score': score.composite_score,
+                'valuation_score': score.valuation_score,
+                'profitability_score': score.profitability_score,
+                'growth_score': score.growth_score,
+                'momentum_score': score.momentum_score,
+                'volatility_score': score.volatility_score,
+                'liquidity_score': score.liquidity_score,
+                'financial_quality_score': score.financial_quality_score,
+                'signal_type': score.signal_type,
+                'signal_strength': score.signal_strength,
+            }
+
+            if include_raw_factors:
+                row['pe'] = score.pe
+                row['pb'] = score.pb
+                row['roe'] = score.roe
+                row['revenue_growth'] = score.revenue_growth
+
+            rows.append(row)
+
+        df = pd.DataFrame(rows)
+        df.to_csv(path, index=False, encoding='utf-8-sig')
+        print(f"[导出] 评分结果已保存: {path}")
+
+    def get_factor_importance(
+        self,
+        scores: List[StockScore]
+    ) -> pd.DataFrame:
+        """
+        分析因子重要性（基于得分相关性）
+
+        Args:
+            scores: 股票评分列表
+
+        Returns:
+            DataFrame(columns=[因子, 重要性])
+        """
+        if len(scores) < 10:
+            return pd.DataFrame()
+
+        # 转换为DataFrame
+        data = []
+        for score in scores:
+            data.append({
+                'valuation_score': score.valuation_score,
+                'profitability_score': score.profitability_score,
+                'growth_score': score.growth_score,
+                'momentum_score': score.momentum_score,
+                'volatility_score': score.volatility_score,
+                'liquidity_score': score.liquidity_score,
+                'composite_score': score.composite_score
+            })
+
+        df = pd.DataFrame(data)
+
+        # 计算各维度与综合得分的相关性
+        correlations = {}
+        for col in df.columns:
+            if col != 'composite_score':
+                corr = df['composite_score'].corr(df[col])
+                correlations[col] = abs(corr)
+
+        # 转换为DataFrame并排序
+        result = pd.DataFrame([
+            {'factor': k, 'importance': v}
+            for k, v in sorted(correlations.items(), key=lambda x: x[1], reverse=True)
+        ])
+
+        return result
+
 
 def create_selector(
     method: str = "composite",

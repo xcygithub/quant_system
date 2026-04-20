@@ -8,11 +8,25 @@ from typing import List, Dict, Optional, Any
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
+import sys
+import os
 
-from quant_system.strategy.base import Strategy, Signal, SignalType
-from quant_system.strategy.moving_average import MovingAverageCrossStrategy, MACDStrategy, BollingerBandsStrategy
-from quant_system.strategy.multi_factor import RSIStrategy, MultiFactorStrategy
-from quant_system.portfolio.watchlist import WatchlistManager, get_watchlist_manager
+# Check if we're running as part of a package or standalone
+_package_name = 'quant_system'
+_in_package = _package_name in sys.modules or any(_package_name in p for p in sys.path)
+
+if _in_package:
+    # Running from parent directory - use absolute imports
+    from quant_system.strategy.base import Strategy, Signal, SignalType
+    from quant_system.strategy.moving_average import MovingAverageCrossStrategy, MACDStrategy, BollingerBandsStrategy
+    from quant_system.strategy.multi_factor import RSIStrategy, MultiFactorStrategy
+    from quant_system.portfolio.watchlist import WatchlistManager, get_watchlist_manager
+else:
+    # Running standalone or relative - use relative imports
+    from .strategy.base import Strategy, Signal, SignalType
+    from .strategy.moving_average import MovingAverageCrossStrategy, MACDStrategy, BollingerBandsStrategy
+    from .strategy.multi_factor import RSIStrategy, MultiFactorStrategy
+    from .watchlist import WatchlistManager, get_watchlist_manager
 
 
 class SignalTypeFilter(Enum):
@@ -171,7 +185,10 @@ class SignalScanner:
         # 获取数据管理器
         dm = data_manager or self.data_manager
         if dm is None:
-            from quant_system.data.data_manager import DataManager
+            try:
+                from .data.data_manager import DataManager
+            except ImportError:
+                from quant_system.data.data_manager import DataManager
             dm = DataManager()
 
         # 确定扫描的股票列表

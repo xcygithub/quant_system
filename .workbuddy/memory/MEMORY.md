@@ -278,4 +278,183 @@
 4. `strategy/__init__.py`：
    - 导出 FundamentalFactors、FactorPreprocessor、FactorNeutralizer
 
+## Phase 3 完成：选股层搭建 - 全市场选股与 IC 分析（2026-04-20）
+
+### 新增文件
+1. `portfolio/stock_scanner.py` - 全市场选股扫描器
+   - MarketStockScanner 类：批量扫描全市场股票
+   - 支持 ST 过滤、新股过滤、低市值过滤
+   - 批量计算技术因子 + 基本面因子
+   - 因子预处理和综合打分
+
+2. `portfolio/ic_analyzer.py` - IC 分析器
+   - ICAnalyzer 类：计算因子 IC（信息系数）和 IR（信息比率）
+   - 支持 Spearman/Pearson 两种相关系数
+   - IC 时间序列分析
+   - IC 有效性判定（强有效/有效/弱有效/无效）
+   - 生成 IC 分析报告
+
+3. `portfolio/factor_quantile_analysis.py` - 因子分层回测
+   - FactorQuantileAnalysis 类：五分位数分层分析
+   - 多空组合收益计算
+   - 分层回测可视化
+   - 生成分层回测报告
+
+### 扩展现有模块
+1. `portfolio/selector.py`：
+   - 新增 `batch_score_from_factors()` 批量打分方法
+   - 新增 `get_top_candidates()` 获取候选股票
+   - 新增 `export_scores()` 导出评分结果
+   - 新增 `get_factor_importance()` 分析因子重要性
+
+2. `portfolio/__init__.py`：
+   - 导出 MarketStockScanner, scan_market
+   - 导出 ICAnalyzer, calculate_factor_ic, get_ic_report
+   - 导出 FactorQuantileAnalysis, ICAnalysisVisualizer
+
+3. `data/data_manager.py`：
+   - 新增 `scan_results` 表：选股扫描结果记录
+   - 新增 `ic_analysis` 表：每日 IC 计算结果
+   - 新增 `ic_statistics` 表：因子 IC 统计
+   - 创建相关索引
+
+### IC 判定规则
+| IC/IR 范围 | 判定 | 建议 |
+|------------|------|------|
+| IR > 0.5 且 IC > 0.03 | 强有效因子 | 高权重 |
+| IR > 0.3 且 IC > 0.02 | 有效因子 | 正常权重 |
+| IR > 0.2 且 IC > 0.01 | 弱有效 | 观察使用 |
+| IR < 0.2 或 IC < 0 | 无效因子 | 不使用 |
+
+## Phase 4 完成：回测层完善 - 多因子回测引擎（2026-04-20）
+
+### 新增文件
+1. `portfolio/factor_signal_generator.py` - 因子信号生成器
+   - FactorSignalGenerator 类：根据因子 IC 加权得分生成交易信号
+   - 支持横截面百分位计算
+   - 支持排名信号和买卖信号生成
+
+2. `portfolio/factor_exposure_tracker.py` - 因子暴露度跟踪器
+   - FactorExposureTracker 类：跟踪组合在各因子上的暴露度
+   - 计算因子收益率（横截面回归法）
+   - 收益归因分析
+
+3. `portfolio/factor_ic_configurator.py` - IC 动态配置器
+   - FactorICConfigurator 类：根据 IC 统计动态调整因子权重
+   - ICStatsCalculator 类：计算和保存 IC 统计
+   - 权重调整规则：强有效1.5x，有效1.0x，弱有效0.5x，无效0.0x
+
+4. `portfolio/multi_factor_backtest.py` - 多因子回测引擎
+   - MultiFactorBacktest 类：继承 MultiStockBacktest
+   - 集成因子信号生成、IC 动态权重、暴露度分析
+   - 生成因子归因分析报告
+
+5. `portfolio/backtest_report.py` - 回测报告生成器
+   - BacktestReport 类：生成增强回测报告
+   - 支持导出 Excel/HTML
+   - 包含因子暴露度、归因分析、IC 有效性回顾
+
+### 扩展现有模块
+1. `data/data_manager.py`：
+   - 新增 `factor_exposure` 表：因子暴露度记录
+   - 新增 `factor_attribution` 表：因子收益归因
+   - 新增 `backtest_config` 表：多因子回测配置
+   - 新增 `backtest_runs` 表：回测期间记录
+
+2. `portfolio/__init__.py`：
+   - 导出 Phase 4 新模块
+
+### IC 权重调整规则
+| 有效性判定 | IC/IR 条件 | 调整系数 | 单一上限 |
+|------------|-----------|----------|----------|
+| 强有效 | IC>3% 且 IR>0.5 | 1.5x | 40% |
+| 有效 | IC>2% 且 IR>0.3 | 1.0x | 30% |
+| 弱有效 | IC>1% 且 IR>0.2 | 0.5x | 20% |
+| 无效/不稳定 | IC<0 或 IR<0.2 | 0.0x | 排除 |
+
+### 使用示例
+```python
+from portfolio.multi_factor_backtest import run_multi_factor_backtest
+
+results = run_multi_factor_backtest(
+    symbols=stock_pool,
+    stock_data=stock_data,
+    start_date='2023-01-01',
+    end_date='2024-03-19',
+    initial_capital=1000000,
+    max_positions=5,
+    rebalance_days=20,
+    factor_weights={
+        'roe': 0.25,
+        'pe': 0.15,
+        'momentum_20': 0.20
+    },
+    use_ic_weighting=True
+)
+
+# 生成报告
+from portfolio.backtest_report import BacktestReport
+report = BacktestReport(results, results['factor_report'])
+report.export_to_excel('multi_factor_backtest.xlsx')
+```
+
+## Phase 5 完成：Web界面 - 因子配置与回测面板（2026-04-20）
+
+### 新增文件
+1. `web/factor_backtest_page.py` - 多因子回测Web页面（约400行）
+   - `render_factor_backtest_page()`: 主渲染函数
+   - `FACTOR_CATEGORIES`: 因子分类定义（5类22个因子）
+   - `DEFAULT_FACTORS`: 默认因子配置
+   - 侧边栏配置：因子选择、权重设置、IC加权参数、回测参数
+   - 主内容区：收益概览、因子分析、交易明细、配置管理
+
+### 扩展现有文件
+1. `web/app.py`:
+   - 新增导入 `from quant_system.web.factor_backtest_page import render_factor_backtest_page`
+   - 标签页从5个扩展到6个
+   - 新增 Tab 3: 📊 多因子回测
+
+### Web 标签页结构
+| Tab | 名称 | 说明 |
+|-----|------|------|
+| Tab 1 | ⭐ 自选股管理 | 自选股行情展示 |
+| Tab 2 | 🎯 策略回测 | 单股票/多股票策略回测 |
+| Tab 3 | 📊 多因子回测 | Phase 5 新增 |
+| Tab 4 | 📈 信号扫描 | 批量信号扫描 |
+| Tab 5 | 📉 绩效分析 | 绩效分析 |
+| Tab 6 | 🔬 因子分析 | 因子IC分析 |
+
+### 因子分类（5类22个因子）
+- **基本面因子**：roe, roa, gross_margin, net_margin, eps, revenue_growth, profit_growth, asset_turnover
+- **估值因子**：pe, pb, ps, pcf
+- **技术因子**：momentum_20, momentum_60, volatility_20, volume_ratio, turnover_rate
+- **财务结构**：debt_ratio, current_ratio, quick_ratio
+- **情绪因子**：price_volume_trend, relative_strength
+
+### Web界面功能
+1. **侧边栏配置**
+   - 因子分类多选（expander折叠）
+   - 权重模式切换：IC智能加权 / 手动设置
+   - IC加权参数：更新频率、历史窗口
+   - 股票池来源：自选股 / 自定义列表
+   - 回测参数：期间、资金、持仓、风控
+
+2. **主内容区（4个标签页）**
+   - 收益概览：指标卡片、权益曲线、月度收益
+   - 因子分析：权重对比、IC判定、暴露度时序、归因分析
+   - 交易明细：可筛选的交易记录表
+   - 配置管理：保存/加载配置、历史记录
+
+3. **进度回调**
+   - 实时显示回测进度
+   - 支持中断回测
+
+
+
+
+
+
+
+
+
 

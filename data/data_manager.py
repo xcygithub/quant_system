@@ -332,9 +332,133 @@ class DataManager:
             VALUES (?, ?, ?, ?, ?)
         ''', default_factors)
 
+        # ========== 选股扫描表 ==========
+
+        # 1. 选股扫描结果表
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS scan_results (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                scan_date TEXT NOT NULL,
+                symbol TEXT NOT NULL,
+                symbol_name TEXT,
+                rank INTEGER,
+                composite_score REAL,
+                valuation_score REAL,
+                profitability_score REAL,
+                growth_score REAL,
+                momentum_score REAL,
+                volatility_score REAL,
+                liquidity_score REAL,
+                financial_quality_score REAL,
+                pe REAL, pb REAL, roe REAL, revenue_growth REAL,
+                is_selected INTEGER DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(scan_date, symbol)
+            )
+        ''')
+
+        # 2. IC分析结果表
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS ic_analysis (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                factor_name TEXT NOT NULL,
+                trade_date TEXT NOT NULL,
+                ic_value REAL,
+                ic_rank REAL,
+                forward_return REAL,
+                sample_count INTEGER,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(factor_name, trade_date)
+            )
+        ''')
+
+        # 3. IC统计表（定期计算）
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS ic_statistics (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                factor_name TEXT NOT NULL UNIQUE,
+                ic_mean REAL,
+                ic_std REAL,
+                ir REAL,
+                ic_positive_ratio REAL,
+                latest_ic REAL,
+                update_date TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+
+        # 创建索引
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_scan_results_date ON scan_results(scan_date)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_ic_analysis_factor ON ic_analysis(factor_name)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_ic_analysis_date ON ic_analysis(trade_date)')
+
+        # ========== Phase 4: 多因子回测表 ==========
+
+        # 4. 因子暴露度记录表
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS factor_exposure (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                date TEXT NOT NULL,
+                factor_name TEXT NOT NULL,
+                exposure REAL,
+                portfolio_value REAL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(date, factor_name)
+            )
+        ''')
+
+        # 5. 因子收益归因表
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS factor_attribution (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                date TEXT NOT NULL,
+                factor_name TEXT NOT NULL,
+                factor_return REAL,
+                portfolio_exposure REAL,
+                attribution REAL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(date, factor_name)
+            )
+        ''')
+
+        # 6. 多因子回测配置表
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS backtest_config (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                config_name TEXT NOT NULL UNIQUE,
+                factor_weights TEXT,
+                ic_adjusted_weights TEXT,
+                ic_stats TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+
+        # 7. 回测期间记录表
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS backtest_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_name TEXT,
+                start_date TEXT,
+                end_date TEXT,
+                symbols_count INTEGER,
+                total_return REAL,
+                annual_return REAL,
+                sharpe_ratio REAL,
+                max_drawdown REAL,
+                config_id INTEGER,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+
+        # 创建索引
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_factor_exposure_date ON factor_exposure(date)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_factor_attribution_date ON factor_attribution(date)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_backtest_runs_date ON backtest_runs(start_date, end_date)')
+
         conn.commit()
         conn.close()
-    
+
     def get_stock_list(self, market: str = "all") -> pd.DataFrame:
         """
         获取股票列表
