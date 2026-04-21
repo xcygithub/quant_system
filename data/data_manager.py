@@ -822,22 +822,32 @@ class DataManager:
         if len(df) < estimated_trading_days * 0.85:
             return False
 
-        # 检查2：最新数据日期是否包含最近一个交易日
-        # 关键：需要考虑周末（周末不是交易日）
-        # - 周一(0)：最近交易日是上周五（3天前）
-        # - 周日(6)：最近交易日是上周五（2天前）
-        # - 其他工作日：最近交易日是昨天（1天前）
+        # 检查2：最新数据日期是否包含 end_date
+        # 关键逻辑：
+        # - 如果 end_date 是历史日期（过去），用 end_date 作为参考
+        # - 如果 end_date 是今天或未来，用当前日期逻辑（考虑周末）
         today = datetime.now()
-        weekday = today.weekday()
+        end_dt = datetime.strptime(end_date, "%Y-%m-%d")
 
-        if weekday == 0:  # 周一
-            days_back = 3  # 上周五
-        elif weekday == 6:  # 周日
-            days_back = 2  # 上周五
-        else:  # 周二~周六
-            days_back = 1  # 昨天
+        if end_dt.date() < today.date():
+            # 回测历史区间：用 end_date 作为参考
+            ref_date = end_dt.date()
+        else:
+            # 实时/未来区间：考虑周末
+            # - 周一(0)：最近交易日是上周五（3天前）
+            # - 周日(6)：最近交易日是上周五（2天前）
+            # - 其他工作日：最近交易日是昨天（1天前）
+            weekday = today.weekday()
 
-        ref_date = (today - timedelta(days=days_back)).date()
+            if weekday == 0:  # 周一
+                days_back = 3  # 上周五
+            elif weekday == 6:  # 周日
+                days_back = 2  # 上周五
+            else:  # 周二~周六
+                days_back = 1  # 昨天
+
+            ref_date = (today - timedelta(days=days_back)).date()
+
         latest_date = pd.to_datetime(df['date']).max().date()
 
         if latest_date < ref_date:

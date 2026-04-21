@@ -803,6 +803,7 @@ class MultiStockBacktest:
             'sell_trades': len(sell_trades),
             'equity_curve': equity_df,
             'trades': self.trades,
+            'trade_details': self.get_trade_details_df(),  # 完整的交易详情（含收益率）
             'final_positions': final_positions,
             'dates': {'start': dates[0], 'end': dates[-1], 'trading_days': n_days}
         }

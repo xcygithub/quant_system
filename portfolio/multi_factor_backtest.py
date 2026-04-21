@@ -106,6 +106,58 @@ class MultiFactorBacktest(MultiStockBacktest):
         # 因子报告
         self.factor_report: Dict[str, Any] = {}
 
+    def set_data(
+        self,
+        stock_data: Dict[str, pd.DataFrame],
+        signals: Dict[str, pd.Series] = None,
+        factor_data: Dict[str, pd.DataFrame] = None
+    ):
+        """
+        设置回测数据并生成因子信号
+
+        Args:
+            stock_data: 股票数据
+            signals: 外部信号（可选，会被忽略）
+            factor_data: 因子数据
+        """
+        # 调用父类方法设置股票数据
+        super().set_data(stock_data, signals=None)
+
+        # 保存因子数据
+        self.factor_data_cache = factor_data or {}
+
+        # 生成每日因子信号
+        print("[多因子回测] 生成因子信号...")
+        all_signals = {}
+
+        # 获取所有日期
+        if stock_data:
+            first_df = list(stock_data.values())[0]
+            if 'date' in first_df.columns:
+                all_dates = pd.to_datetime(first_df['date']).dt.strftime('%Y-%m-%d').tolist()
+            else:
+                all_dates = first_df.index.strftime('%Y-%m-%d').tolist()
+        else:
+            all_dates = []
+
+        # 为每个日期生成信号
+        for date in all_dates:
+            daily_signals = self._generate_factor_signals(date, stock_data)
+            for symbol, signal_series in daily_signals.items():
+                if symbol not in all_signals:
+                    all_signals[symbol] = []
+                all_signals[symbol].append((date, signal_series.iloc[0] if len(signal_series) > 0 else 0))
+
+        # 转换为 Series 格式
+        self.signals = {}
+        for symbol, signal_list in all_signals.items():
+            if signal_list:
+                dates_list = [s[0] for s in signal_list]
+                values_list = [s[1] for s in signal_list]
+                self.signals[symbol] = pd.Series(values_list, index=dates_list)
+
+        print(f"[多因子回测] 信号生成完成，共 {len(self.signals)} 只股票有信号")
+
     def run(
         self,
         symbols: List[str],
@@ -231,7 +283,9 @@ class MultiFactorBacktest(MultiStockBacktest):
         """
         panel_data = []
 
-        for symbol, df in stock_data.items():
+        for symbol in stock_data.keys():
+            df = stock_data[symbol]
+
             # 找到当日的数据
             if 'date' in df.columns:
                 df_dates = pd.to_datetime(df['date']).dt.strftime('%Y-%m-%d')
@@ -261,7 +315,22 @@ class MultiFactorBacktest(MultiStockBacktest):
                     returns = df['close'].pct_change().iloc[max(0, close_idx-20):close_idx]
                     factor_values['volatility_20'] = returns.std()
 
-            # 基本面因子（如果有）
+            # 基本面因子 - 优先从 factor_data_cache 获取
+            if symbol in self.factor_data_cache:
+                factor_df = self.factor_data_cache[symbol]
+                if 'date' in factor_df.columns:
+                    factor_dates = pd.to_datetime(factor_df['date']).dt.strftime('%Y-%m-%d')
+                    factor_row = factor_df[factor_dates == date]
+                else:
+                    factor_row = factor_df[factor_df.index == date]
+
+                if not factor_row.empty:
+                    factor_row = factor_row.iloc[0]
+                    for factor in self.factor_names:
+                        if factor not in factor_values and factor in factor_row.index:
+                            factor_values[factor] = factor_row[factor]
+
+            # 如果缓存中没有，再从 stock_data 尝试获取
             for factor in self.factor_names:
                 if factor not in factor_values and factor in row.index:
                     factor_values[factor] = row[factor]
@@ -476,7 +545,7 @@ def run_multi_factor_backtest(
     )
 
     # 设置数据并运行
-    backtest.set_data(stock_data)
+    backtest.set_data(stock_data, factor_data=factor_data)
 
     return backtest.run(
         symbols=symbols,

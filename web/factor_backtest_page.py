@@ -89,11 +89,8 @@ def render_factor_backtest_page(dm: DataManager, wl_manager):
     # 初始化 session state
     _init_session_state()
 
-    # 侧边栏配置
-    with st.sidebar:
-        config = _render_sidebar_config(dm, wl_manager)
-
-    # 主内容区
+    # 主内容区（因子配置 + 回测结果）
+    config = _render_sidebar_config(dm, wl_manager)
     _render_main_content(dm, wl_manager, config)
 
 
@@ -734,34 +731,36 @@ def _render_trade_details(results: Dict[str, Any]):
 
     if trade_details is not None and not trade_details.empty:
         # 筛选器
-        col1, col2, col3 = st.columns(3)
+        col1, col2 = st.columns(2)
 
+        # 股票筛选 - get_trade_details_df 使用 '股票' 列名
         with col1:
-            if 'symbol' in trade_details.columns:
+            if '股票' in trade_details.columns:
                 symbol_filter = st.multiselect(
                     "股票筛选",
-                    trade_details['symbol'].unique(),
+                    trade_details['股票'].unique(),
                     default=[],
                     key="mfbt_symbol_filter"
                 )
             else:
                 symbol_filter = []
 
+        # 状态筛选 - 根据 '状态' 列筛选
         with col2:
-            trade_type = st.selectbox(
-                "交易类型",
-                ["全部", "买入", "卖出"],
-                key="mfbt_trade_type"
+            status_filter = st.selectbox(
+                "状态筛选",
+                ["全部", "已卖出", "持有中"],
+                key="mfbt_status_filter"
             )
 
         # 应用筛选
         filtered = trade_details.copy()
         if symbol_filter:
-            filtered = filtered[filtered['symbol'].isin(symbol_filter)]
-        if trade_type == "买入":
-            filtered = filtered[filtered.get('direction', '') == 'buy']
-        elif trade_type == "卖出":
-            filtered = filtered[filtered.get('direction', '') == 'sell']
+            filtered = filtered[filtered['股票'].isin(symbol_filter)]
+        if status_filter == "已卖出":
+            filtered = filtered[filtered.get('状态', '') == '已卖出']
+        elif status_filter == "持有中":
+            filtered = filtered[filtered.get('状态', '') == '持有中']
 
         # 颜色函数
         def color_return(val):
@@ -772,7 +771,8 @@ def _render_trade_details(results: Dict[str, Any]):
                     return 'color: #28a745'
             return ''
 
-        styled = filtered.style.applymap(color_return, subset=['收益率', '收益金额'])
+        # 使用实际列名 '收益率（%）' 和 '收益金额（元）'
+        styled = filtered.style.applymap(color_return, subset=['收益率（%）', '收益金额（元）'])
 
         # 显示表格
         st.dataframe(styled, use_container_width=True)
@@ -784,11 +784,11 @@ def _render_trade_details(results: Dict[str, Any]):
         with col1:
             st.metric("总交易次数", len(filtered))
         with col2:
-            buy_trades = len(filtered[filtered.get('direction', '') == 'buy'])
-            st.metric("买入次数", buy_trades)
+            sell_trades = len(filtered[filtered.get('状态', '') == '已卖出'])
+            st.metric("已卖出次数", sell_trades)
         with col3:
-            sell_trades = len(filtered[filtered.get('direction', '') == 'sell'])
-            st.metric("卖出次数", sell_trades)
+            open_trades = len(filtered[filtered.get('状态', '') == '持有中'])
+            st.metric("持有中次数", open_trades)
         with col4:
             if '持有天数' in filtered.columns:
                 avg_days = filtered['持有天数'].mean()
