@@ -68,6 +68,22 @@
   - **场景**: 单只股票回测（max_positions=1），每次调仓加仓20%，5次后满仓100%
   - **修复1**: `_buy()` 中改为 `current_holding_value + amount > max_single_amount` 检查累计持仓
   - **修复2**: `_rebalance()` 中改为差额买入逻辑：`buy_amount_needed = target_amount - current_holding`，已达目标仓位的不再加仓
+- **_check_data_complete 时间判断 bug (2026-04-21 已修复)**:
+  - **问题**: 用 `datetime.now()`（当前日期）判断数据是否"最新"，导致回测历史数据时被认为"过时"
+  - **场景**: 回测区间 2023-01-01 到 2024-03-19，数据库中有完整数据，但每次都重新获取
+  - **修复**: 当 end_date 是历史日期时，用 end_date 作为参考日期；只有 end_date 是今天或未来时才用当前日期逻辑（考虑周末）
+- **multi_factor_backtest.py 信号生成缺失 (2026-04-21 已修复)**:
+  - **问题**: MultiFactorBacktest 没有覆盖 set_data 方法生成因子信号，导致回测没有交易
+  - **修复**: 重写 set_data 方法，遍历每个交易日调用 _generate_factor_signals 生成信号
+- **multi_factor_backtest.py 因子面板数据源 bug (2026-04-21 已修复)**:
+  - **问题**: _build_factor_panel 从 stock_data（K线数据）中查找因子，但因子数据实际在 factor_data_cache 中
+  - **修复**: 优先从 factor_data_cache 获取因子数据，兼容从 stock_data 获取
+- **_render_trade_details 列名不匹配 (2026-04-21 已修复)**:
+  - **问题**: 期望英文列名（symbol/direction），实际返回中文列名（股票/状态）
+  - **修复**: 适配实际列名 '股票'、'状态'、'收益率（%）'、'收益金额（元）'
+- **_calculate_results 缺少 trade_details (2026-04-21 已修复)**:
+  - **问题**: _calculate_results 返回的结果中没有包含 trade_details 字段
+  - **修复**: 在返回值中添加 `'trade_details': self.get_trade_details_df()`
 
 ## 回测引擎修复 (2026-04-07)
 1. **backtest/engine.py**:
