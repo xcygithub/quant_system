@@ -45,7 +45,8 @@ class MultiFactorBacktest(MultiStockBacktest):
         factor_names: List[str] = None,
         use_ic_weighting: bool = True,
         ic_update_freq: int = 60,
-        db_path: str = None
+        db_path: str = None,
+        progress_callback: callable = None
     ):
         """
         初始化多因子回测引擎
@@ -460,6 +461,8 @@ def run_multi_factor_backtest(
         default_weights.update(factor_weights)
 
     # 创建回测引擎
+    # 从 kwargs 中提取 progress_callback，避免重复传递
+    progress_callback = kwargs.pop('progress_callback', None)
     backtest = MultiFactorBacktest(
         initial_capital=initial_capital,
         max_positions=max_positions,
@@ -468,6 +471,7 @@ def run_multi_factor_backtest(
         factor_names=list(default_weights.keys()),
         use_ic_weighting=use_ic_weighting,
         ic_update_freq=ic_update_freq,
+        progress_callback=progress_callback,
         **kwargs
     )
 
