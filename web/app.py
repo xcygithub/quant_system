@@ -16,6 +16,7 @@ project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
 from quant_system.data.data_manager import DataManager
+from quant_system.data.data_provider import CacheOnlyProvider
 from quant_system.data.factor_data import FactorData
 from quant_system.backtest.performance import PerformanceAnalyzer
 from quant_system.strategy.moving_average import MovingAverageCrossStrategy, MACDStrategy, BollingerBandsStrategy
@@ -100,16 +101,17 @@ tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
     "🔬 因子分析"
 ])
 
-# 辅助函数：获取最近交易日行情
+# 辅助函数：获取最近交易日行情（仅从数据库读取，不触发网络更新）
 def get_latest_quote(symbol):
-    """获取股票最近一个交易日的行情数据"""
+    """获取股票最近一个交易日的行情数据（仅从数据库读取，不触发网络更新）"""
     try:
         # 获取最近30天的数据
         end_date = datetime.now()
         start_date = end_date - timedelta(days=30)
 
-        # 先从数据库读取，如果没有再从在线数据源获取
-        df = dm.get_daily_kline(
+        # 【修改】只从数据库读取，不触发网络更新
+        # 使用 _get_kline_from_db 直接读取，绕过 get_daily_kline 的完整性检查
+        df = dm._get_kline_from_db(
             symbol,
             start_date.strftime("%Y-%m-%d"),
             end_date.strftime("%Y-%m-%d")
@@ -1201,10 +1203,11 @@ with tab2:
             is_multi_factor = (strategy_name == "多因子 (Multi-Factor)")
 
             with st.spinner(f"正在运行{'单股票' if is_single_stock else '多股票'}{'多因子' if is_multi_factor else strategy_name}回测..."):
-                # 获取数据
+                # 获取数据（使用 CacheOnlyProvider，只读数据库，不触发网络请求）
+                cache_provider = CacheOnlyProvider(dm.db_path)
                 stock_data = {}
                 for sym in symbols:
-                    df = dm.get_daily_kline(sym, start_date.strftime("%Y-%m-%d"), end_date.strftime("%Y-%m-%d"))
+                    df = cache_provider.get_stock_data(sym, start_date.strftime("%Y-%m-%d"), end_date.strftime("%Y-%m-%d"))
                     if not df.empty:
                         stock_data[sym] = df
 

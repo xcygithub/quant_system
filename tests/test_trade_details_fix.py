@@ -177,6 +177,8 @@ def test_multi_factor_backtest_trade_details():
         if not trade_df.empty:
             print(f"  交易明细数量: {len(trade_df)}")
             print(f"  列名: {list(trade_df.columns)}")
+            print(f"\n  所有交易明细内容:")
+            print(trade_df.to_string())
         else:
             print(f"  [WARN] trade_details 为空")
     else:

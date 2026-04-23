@@ -7,6 +7,7 @@ import numpy as np
 from typing import Dict, List, Optional, Any, Tuple
 from datetime import datetime
 import json
+from dataclasses import dataclass, field
 
 from .multi_stock_backtest import (
     MultiStockBacktest, PortfolioPosition, TradeRecord, TradeDetail,
@@ -15,6 +16,22 @@ from .multi_stock_backtest import (
 from .factor_signal_generator import FactorSignalGenerator, create_signal_generator
 from .factor_exposure_tracker import FactorExposureTracker
 from .factor_ic_configurator import FactorICConfigurator
+
+
+@dataclass
+class RebalanceSnapshot:
+    """调仓日快照：记录每次调仓时的完整因子面板"""
+    date: str
+    # 全部候选股票的综合得分 {symbol: score}
+    all_scores: Dict[str, float] = field(default_factory=dict)
+    # 全部候选股票的因子原始值 {symbol: {factor: value}}
+    all_factor_values: Dict[str, Dict[str, float]] = field(default_factory=dict)
+    # 全部候选股票的因子百分位 {symbol: {factor: percentile}}
+    all_factor_percentiles: Dict[str, Dict[str, float]] = field(default_factory=dict)
+    # 最终买入的股票列表
+    selected_symbols: List[str] = field(default_factory=list)
+    # 最终卖出的股票列表
+    sold_symbols: List[str] = field(default_factory=list)
 
 
 class MultiFactorBacktest(MultiStockBacktest):
@@ -106,6 +123,21 @@ class MultiFactorBacktest(MultiStockBacktest):
         # 因子报告
         self.factor_report: Dict[str, Any] = {}
 
+        # 调仓日快照列表
+        self.rebalance_snapshots: List[RebalanceSnapshot] = []
+
+        # 每日因子面板缓存 {date_str: DataFrame}
+        self._factor_panel_cache: Dict[str, pd.DataFrame] = {}
+
+        # 每日因子百分位缓存 {date_str: {symbol: {factor: percentile}}}
+        self._factor_percentiles_cache: Dict[str, Dict[str, Dict[str, float]]] = {}
+
+        # 每日综合得分缓存 {date_str: {symbol: score}}
+        self._composite_scores_cache: Dict[str, Dict[str, float]] = {}
+
+        # 股票名称映射 {symbol: name}
+        self.stock_names: Dict[str, str] = {}
+
     def set_data(
         self,
         stock_data: Dict[str, pd.DataFrame],
@@ -185,6 +217,11 @@ class MultiFactorBacktest(MultiStockBacktest):
         print(f"开始多因子回测 | 初始资金: {self.initial_capital:,.0f}")
         print(f"{'='*60}")
 
+        # 重置调仓快照（每次回测重新记录）
+        self.rebalance_snapshots = []
+        # 注意：不重置 _factor_panel_cache 等缓存，
+        # 因为 set_data() 中已生成，而 run() 中不会重新调用 set_data()
+
         # 更新初始权重
         if initial_weights:
             self.factor_weights = initial_weights
@@ -202,6 +239,10 @@ class MultiFactorBacktest(MultiStockBacktest):
         # Step 3: 生成因子分析报告
         factor_report = self._generate_factor_report(results)
         results['factor_report'] = factor_report
+
+        # ===== 新增：将调仓快照加入结果 =====
+        results['rebalance_snapshots'] = self.rebalance_snapshots
+        results['factor_names'] = self.factor_names
 
         # 打印因子报告摘要
         self._print_factor_summary(factor_report)
@@ -254,6 +295,17 @@ class MultiFactorBacktest(MultiStockBacktest):
 
         if factor_panel.empty:
             return signals
+
+        # ===== 缓存因子面板 =====
+        self._factor_panel_cache[date] = factor_panel.copy()
+
+        # 计算百分位得分并缓存
+        percentile_scores = self.signal_generator._calculate_percentile_scores(factor_panel)
+        self._factor_percentiles_cache[date] = percentile_scores
+
+        # 计算综合得分并缓存
+        combined_scores = self.signal_generator._calculate_combined_scores(percentile_scores)
+        self._composite_scores_cache[date] = combined_scores
 
         # 生成排名信号
         top_n = self.max_positions
@@ -344,6 +396,166 @@ class MultiFactorBacktest(MultiStockBacktest):
         panel = pd.DataFrame(panel_data).set_index('symbol')
 
         return panel
+
+    def _rebalance(self, date, prices: Dict[str, float]):
+        """调仓：重写父类方法，增加因子信息记录和调仓快照"""
+        # 0. 排除当天止损卖出的股票
+        stop_loss_sold = self._stop_loss_sold_today.copy()
+
+        # 1. 选出新的候选股票
+        new_candidates = self._select_candidates()
+
+        if not new_candidates:
+            return
+
+        # 过滤掉当天止损卖出的股票
+        new_candidates = [c for c in new_candidates if c.symbol not in stop_loss_sold]
+
+        if not new_candidates:
+            return
+
+        # 2. 计算目标持仓
+        target_symbols = {score.symbol for score in new_candidates}
+        current_symbols = set(self.positions.keys())
+
+        # 3. 卖出不在目标中的持仓
+        to_sell = current_symbols - target_symbols
+        for symbol in to_sell:
+            self._close_position(symbol, date, prices.get(symbol, 0), "调仓换股")
+
+        # ===== 新增：创建调仓快照 =====
+        snapshot = RebalanceSnapshot(date=str(date)[:10])
+
+        # 记录全部候选股票的因子信息
+        date_str = str(date)[:10]
+        if date_str in self._composite_scores_cache:
+            snapshot.all_scores = self._composite_scores_cache[date_str]
+        if date_str in self._factor_panel_cache:
+            panel = self._factor_panel_cache[date_str]
+            for symbol in panel.index:
+                snapshot.all_factor_values[symbol] = {
+                    f: panel.loc[symbol, f]
+                    for f in self.factor_names if f in panel.columns
+                }
+        if date_str in self._factor_percentiles_cache:
+            snapshot.all_factor_percentiles = self._factor_percentiles_cache[date_str]
+
+        # 记录卖出股票
+        snapshot.sold_symbols = list(to_sell)
+
+        # 4. 分配仓位并买入
+        if self.cash > 0:
+            # 准备候选股票数据（包含得分和波动率）
+            candidate_data = []
+            for score in new_candidates:
+                volatility = self._estimate_volatility(score.symbol)
+                candidate_data.append((score.symbol, score.composite_score, volatility))
+
+            # 分配仓位（基于总资产计算目标权重）
+            total_assets = self.cash + sum(p.market_value for p in self.positions.values())
+            allocations = self.position_sizer.allocate(
+                candidate_data,
+                total_assets,
+                prices
+            )
+
+            # 执行买入（扣除已有持仓，只买差额部分）
+            for alloc in allocations:
+                if alloc.symbol in prices and alloc.weight > 0:
+                    # 计算目标持仓金额
+                    target_amount = total_assets * alloc.weight
+                    # 扣除已有持仓市值
+                    current_holding = self.positions[alloc.symbol].market_value if alloc.symbol in self.positions else 0
+                    buy_amount_needed = target_amount - current_holding
+
+                    if buy_amount_needed <= 0:
+                        # 已达目标仓位，不需要加仓
+                        continue
+
+                    # 根据需要买入的金额计算股数
+                    price = prices[alloc.symbol]
+                    buy_shares = int(buy_amount_needed / price / 100) * 100
+                    if buy_shares < 100:
+                        continue
+
+                    # 获取该股票的因子信息
+                    factor_values = {}
+                    factor_percentiles = {}
+                    composite_score = 0.0
+                    rank = 0
+
+                    if date_str in self._factor_panel_cache:
+                        panel = self._factor_panel_cache[date_str]
+                        if alloc.symbol in panel.index:
+                            factor_values = {
+                                f: panel.loc[alloc.symbol, f]
+                                for f in self.factor_names if f in panel.columns
+                            }
+
+                    if date_str in self._factor_percentiles_cache:
+                        percs = self._factor_percentiles_cache[date_str]
+                        factor_percentiles = percs.get(alloc.symbol, {})
+
+                    if date_str in self._composite_scores_cache:
+                        scores = self._composite_scores_cache[date_str]
+                        composite_score = scores.get(alloc.symbol, 0)
+                        # 计算排名
+                        sorted_scores = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+                        for i, (sym, _) in enumerate(sorted_scores):
+                            if sym == alloc.symbol:
+                                rank = i + 1
+                                break
+
+                    # 获取股票名称
+                    stock_name = self.stock_names.get(alloc.symbol, "")
+
+                    # 执行买入（传入因子信息）
+                    self._buy_multi_factor(
+                        alloc.symbol, date, price, buy_shares, total_assets, "调仓买入",
+                        stock_name=stock_name,
+                        factor_values=factor_values,
+                        factor_percentiles=factor_percentiles,
+                        composite_score=composite_score,
+                        rank=rank,
+                        total_candidates=len(snapshot.all_scores)
+                    )
+
+                    snapshot.selected_symbols.append(alloc.symbol)
+
+        # 保存调仓快照
+        self.rebalance_snapshots.append(snapshot)
+        self.last_rebalance_day = self.trading_days
+
+    def _buy_multi_factor(
+        self,
+        symbol: str,
+        date,
+        price: float,
+        quantity: int,
+        total_assets: float,
+        reason: str = "",
+        stock_name: str = "",
+        factor_values: Dict[str, float] = None,
+        factor_percentiles: Dict[str, float] = None,
+        composite_score: float = 0.0,
+        rank: int = 0,
+        total_candidates: int = 0
+    ):
+        """
+        多因子专用买入方法
+        调用父类 _buy() 执行实际买入，然后补充因子信息到 TradeDetail
+        """
+        # 调用父类买入（执行实际交易逻辑）
+        super()._buy(symbol, date, price, quantity, total_assets, reason, stock_name=stock_name)
+
+        # 补充因子信息到 active_trades
+        if symbol in self.active_trades:
+            td = self.active_trades[symbol]
+            td.factor_values = factor_values or {}
+            td.factor_percentiles = factor_percentiles or {}
+            td.composite_score = composite_score
+            td.rank = rank
+            td.total_candidates = total_candidates
 
     def _record_factor_exposure(
         self,
@@ -493,6 +705,7 @@ def run_multi_factor_backtest(
     factor_weights: Dict[str, float] = None,
     use_ic_weighting: bool = True,
     ic_update_freq: int = 60,
+    stock_names: Dict[str, str] = None,
     **kwargs
 ) -> Dict[str, Any]:
     """
@@ -510,6 +723,7 @@ def run_multi_factor_backtest(
         factor_weights: 因子权重
         use_ic_weighting: 是否使用 IC 加权
         ic_update_freq: IC 更新频率
+        stock_names: 股票名称映射 {symbol: name}
         **kwargs: 其他参数
 
     Returns:
@@ -543,6 +757,10 @@ def run_multi_factor_backtest(
         progress_callback=progress_callback,
         **kwargs
     )
+
+    # 设置股票名称映射
+    if stock_names:
+        backtest.stock_names = stock_names
 
     # 设置数据并运行
     backtest.set_data(stock_data, factor_data=factor_data)

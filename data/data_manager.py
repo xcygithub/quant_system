@@ -13,23 +13,26 @@ import time
 import warnings
 warnings.filterwarnings('ignore')
 
+import sys
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from config import DATABASE_PATH, CACHE_DIR
+
 from .data_sources import MultiDataSource
 
 class DataManager:
     """数据管理器 - 负责数据的获取、缓存和更新"""
-    
+
     def __init__(self, db_path: str = None):
         """
         初始化数据管理器
 
         Args:
-            db_path: SQLite数据库路径，默认使用 Claw 目录下的 quant_data.db
+            db_path: SQLite数据库路径，默认使用配置文件中的路径
         """
         if db_path is None:
-            # 统一使用 Claw 目录下的数据库（与项目分离，方便管理）
-            db_path = Path(__file__).parent.parent.parent / "quant_data.db"
+            db_path = DATABASE_PATH
         self.db_path = str(db_path)
-        self.cache_dir = Path("data_cache")
+        self.cache_dir = CACHE_DIR
         self.cache_dir.mkdir(exist_ok=True)
         self.data_source = MultiDataSource()  # 使用多数据源
         self._init_database()
@@ -550,24 +553,31 @@ class DataManager:
             
             # 尝试从数据库读取
             df = self._get_kline_from_db(symbol, start_date, end_date)
-            
+
             if df.empty or not self._check_data_complete(df, start_date, end_date):
                 print(f"从数据库未获取到完整数据，尝试从在线数据源获取...")
-                
+
                 # 使用多数据源获取
-                df = self.data_source.get_daily_kline(symbol, start_date, end_date)
-                
-                if not df.empty:
+                df_online = self.data_source.get_daily_kline(symbol, start_date, end_date)
+
+                if not df_online.empty:
                     # 保存到数据库
                     try:
-                        self._save_kline_to_db(df)
+                        self._save_kline_to_db(df_online)
                     except Exception as db_err:
                         print(f"保存到数据库失败: {db_err}")
+                    df = df_online
                 else:
                     print(f"从所有数据源获取到空数据")
+                    # 【关键修复】在线源失败时，回退使用数据库中已有的数据
+                    if not df.empty:
+                        print(f"回退使用数据库中的 {len(df)} 条历史数据（可能不完整）")
+                        # df 保持为数据库读取的数据，继续返回
+                    else:
+                        df = pd.DataFrame()
             else:
                 print(f"从数据库获取到 {len(df)} 条数据")
-            
+
             return df
             
         except Exception as e:

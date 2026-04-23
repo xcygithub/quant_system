@@ -86,6 +86,13 @@ class TradeDetail:
     net_return_rate: float = 0.0  # 净收益率（扣除手续费）
     profit: float = 0.0  # 收益金额
     status: str = "open"  # open=持有中, closed=已卖出
+    # 多因子扩展字段
+    stock_name: str = ""  # 股票中文名称
+    factor_values: Dict[str, float] = field(default_factory=dict)  # 因子原始值 {factor: value}
+    factor_percentiles: Dict[str, float] = field(default_factory=dict)  # 因子百分位得分 {factor: percentile}
+    composite_score: float = 0.0  # 综合得分
+    rank: int = 0  # 当日排名
+    total_candidates: int = 0  # 当日候选股票总数
 
     def calculate_returns(self):
         """计算收益率"""
@@ -522,7 +529,8 @@ class MultiStockBacktest:
         price: float,
         quantity: int,
         total_assets: float,
-        reason: str = ""
+        reason: str = "",
+        stock_name: str = ""
     ):
         """买入
 
@@ -533,6 +541,7 @@ class MultiStockBacktest:
             quantity: 买入数量（股）
             total_assets: 当前总资产（用于计算仓位限制）
             reason: 买入原因
+            stock_name: 股票中文名称
         """
         if quantity <= 0 or price <= 0:
             return
@@ -622,7 +631,8 @@ class MultiStockBacktest:
             entry_amount=amount,
             entry_commission=commission,
             entry_total_asset=entry_total_asset,
-            status="open"
+            status="open",
+            stock_name=stock_name
         )
         # 如果同一股票有之前的持仓，先合并（简单处理：更新已有）
         if symbol in self.active_trades:
@@ -871,7 +881,7 @@ class MultiStockBacktest:
         """
         获取完整的交易详情DataFrame（每次操作收益率表格）
 
-        包含：买入日期/价格/数量，卖出日期/价格/数量，收益率，持有天数，状态
+        包含：买入日期/价格/数量，卖出日期/价格/数量，收益率，持有天数，状态，因子得分
         """
         if not self.trade_details:
             return pd.DataFrame()
@@ -889,9 +899,14 @@ class MultiStockBacktest:
             # 告警：买入金额超过总资产的20%
             over_limit = "![!]OVER" if position_ratio > 20 else ""
 
-            records.append({
+            # 股票显示名称：代码 - 中文名
+            display_symbol = f"{td.symbol} - {td.stock_name}" if td.stock_name else td.symbol
+
+            record = {
                 '交易ID': td.trade_id,
-                '股票': td.symbol,
+                '股票': display_symbol,
+                '股票代码': td.symbol,
+                '股票名称': td.stock_name,
                 '买入日期': str(td.entry_date)[:10] if td.entry_date else '',
                 '总资产（元）': round(td.entry_total_asset, 2),
                 '买入价格（元）': round(td.entry_price, 2),
@@ -910,8 +925,19 @@ class MultiStockBacktest:
                 '净收益率（%）': round(td.net_return_rate * 100, 2),
                 '收益金额（元）': round(td.profit, 2),
                 '状态': status_text,
-                '卖出原因': td.exit_reason if td.status == 'closed' else ''
-            })
+                '卖出原因': td.exit_reason if td.status == 'closed' else '',
+                # 多因子扩展字段
+                '综合得分': round(td.composite_score, 1) if td.composite_score else None,
+                '排名': f"{td.rank} / {td.total_candidates}" if td.rank and td.total_candidates else (td.rank if td.rank else None),
+            }
+
+            # 添加因子原始值和百分位得分列
+            for factor, value in td.factor_values.items():
+                record[f'{factor}_原始值'] = round(value, 4) if isinstance(value, float) else value
+            for factor, perc in td.factor_percentiles.items():
+                record[f'{factor}_得分'] = round(perc, 1)
+
+            records.append(record)
 
         return pd.DataFrame(records)
 

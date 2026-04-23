@@ -16,6 +16,7 @@ try:
     from quant_system.portfolio.factor_ic_configurator import FactorICConfigurator
     from quant_system.portfolio.factor_signal_generator import FactorSignalGenerator
     from quant_system.data.data_manager import DataManager
+    from quant_system.data.data_provider import CacheOnlyProvider
 except ImportError:
     from ..portfolio.multi_factor_backtest import MultiFactorBacktest, run_multi_factor_backtest
     from ..portfolio.factor_ic_configurator import FactorICConfigurator
@@ -354,7 +355,7 @@ def _render_main_content(dm: DataManager, wl_manager, config: Dict[str, Any]):
 
     # 处理回测执行
     if config['run_button']:
-        _execute_backtest(dm, config)
+        _execute_backtest(dm, wl_manager, config)
 
     # 处理中断
     if config['stop_button']:
@@ -368,7 +369,7 @@ def _render_main_content(dm: DataManager, wl_manager, config: Dict[str, Any]):
         _render_empty_state(dm, config)
 
 
-def _execute_backtest(dm: DataManager, config: Dict[str, Any]):
+def _execute_backtest(dm: DataManager, wl_manager, config: Dict[str, Any]):
     """执行回测"""
     symbols = config['symbols']
 
@@ -399,6 +400,15 @@ def _execute_backtest(dm: DataManager, config: Dict[str, Any]):
                 st.error("无法获取股票数据")
                 return
 
+            # 构建股票名称映射
+            stock_names = {}
+            for s in symbols:
+                info = wl_manager.get_stock(s)
+                if info and info.name:
+                    stock_names[s] = info.name
+                else:
+                    stock_names[s] = s
+
             progress_callback(30, "准备因子数据")
 
             # 构建因子数据
@@ -419,7 +429,8 @@ def _execute_backtest(dm: DataManager, config: Dict[str, Any]):
                 factor_weights=config['factor_weights'],
                 use_ic_weighting=config['use_ic_weighting'],
                 ic_update_freq=config['ic_update_freq'] or 60,
-                progress_callback=progress_callback
+                progress_callback=progress_callback,
+                stock_names=stock_names
             )
 
             progress_callback(100, "回测完成")
@@ -440,12 +451,18 @@ def _execute_backtest(dm: DataManager, config: Dict[str, Any]):
 
 
 def _fetch_stock_data(dm: DataManager, symbols: List[str], start_date: str, end_date: str) -> Dict[str, pd.DataFrame]:
-    """获取股票数据"""
-    stock_data = {}
+    """
+    获取股票数据（回测专用，只读缓存）
 
+    使用 CacheOnlyProvider 避免触发网络请求，确保回测稳定性
+    """
+    # 使用 CacheOnlyProvider，只读数据库，不触发网络请求
+    cache_provider = CacheOnlyProvider(dm.db_path)
+
+    stock_data = {}
     for symbol in symbols:
         try:
-            df = dm.get_daily_kline(symbol, start_date, end_date)
+            df = cache_provider.get_stock_data(symbol, start_date, end_date)
             if not df.empty:
                 stock_data[symbol] = df
         except Exception as e:
@@ -518,6 +535,7 @@ def _render_results(results: Dict[str, Any]):
         "📈 收益概览",
         "📊 因子分析",
         "📋 交易明细",
+        "🔄 调仓记录",
         "💾 配置管理"
     ])
 
@@ -533,8 +551,12 @@ def _render_results(results: Dict[str, Any]):
     with result_tabs[2]:
         _render_trade_details(results)
 
-    # 标签页4: 配置管理
+    # 标签页4: 调仓记录
     with result_tabs[3]:
+        _render_rebalance_history(results)
+
+    # 标签页5: 配置管理
+    with result_tabs[4]:
         _render_config_management(results)
 
 
@@ -725,15 +747,17 @@ def _render_factor_analysis(results: Dict[str, Any]):
 
 
 def _render_trade_details(results: Dict[str, Any]):
-    """渲染交易明细"""
+    """渲染交易明细（含因子信息）"""
 
     trade_details = results.get('trade_details')
 
     if trade_details is not None and not trade_details.empty:
+        # ===== 因子列展示控制 =====
+        factor_names = results.get('factor_names', [])
+        show_factors = st.checkbox("显示因子得分列", value=False, key="mfbt_show_factors")
+
         # 筛选器
         col1, col2 = st.columns(2)
-
-        # 股票筛选 - get_trade_details_df 使用 '股票' 列名
         with col1:
             if '股票' in trade_details.columns:
                 symbol_filter = st.multiselect(
@@ -744,8 +768,6 @@ def _render_trade_details(results: Dict[str, Any]):
                 )
             else:
                 symbol_filter = []
-
-        # 状态筛选 - 根据 '状态' 列筛选
         with col2:
             status_filter = st.selectbox(
                 "状态筛选",
@@ -771,16 +793,43 @@ def _render_trade_details(results: Dict[str, Any]):
                     return 'color: #28a745'
             return ''
 
-        # 使用实际列名 '收益率（%）' 和 '收益金额（元）'
-        styled = filtered.style.applymap(color_return, subset=['收益率（%）', '收益金额（元）'])
+        # 构建显示列顺序
+        base_cols = ['交易ID', '股票', '买入日期', '买入价格（元）', '买入数量', '买入金额（元）',
+                     '卖出日期', '卖出价格（元）', '收益率（%）', '净收益率（%）', '收益金额（元）',
+                     '持有天数', '状态']
+        factor_cols = []
+        if show_factors and factor_names:
+            for f in factor_names:
+                if f'{f}_得分' in filtered.columns:
+                    factor_cols.append(f'{f}_得分')
+            if '综合得分' in filtered.columns:
+                factor_cols.append('综合得分')
+            if '排名' in filtered.columns:
+                factor_cols.append('排名')
 
-        # 显示表格
+        display_cols = [c for c in base_cols + factor_cols if c in filtered.columns]
+
+        # 使用实际列名渲染
+        styled = filtered[display_cols].style.applymap(
+            color_return, subset=['收益率（%）', '收益金额（元）']
+        )
         st.dataframe(styled, use_container_width=True)
+
+        # ===== 展开详情：雷达图 =====
+        if show_factors and factor_names and not filtered.empty:
+            st.markdown("**交易因子详情**")
+            selected_trade = st.selectbox(
+                "选择交易查看因子雷达图",
+                filtered['交易ID'].tolist(),
+                key="mfbt_radar_trade"
+            )
+            row = filtered[filtered['交易ID'] == selected_trade]
+            if not row.empty:
+                _render_trade_radar(row.iloc[0], factor_names)
 
         # 统计摘要
         st.markdown("**交易统计**")
         col1, col2, col3, col4 = st.columns(4)
-
         with col1:
             st.metric("总交易次数", len(filtered))
         with col2:
@@ -795,6 +844,164 @@ def _render_trade_details(results: Dict[str, Any]):
                 st.metric("平均持有天数", f"{avg_days:.1f}")
     else:
         st.info("无交易明细数据")
+
+
+def _render_trade_radar(row: pd.Series, factor_names: List[str]):
+    """渲染单只交易的因子雷达图"""
+    # 收集因子得分
+    theta = []
+    r = []
+    for f in factor_names:
+        col = f'{f}_得分'
+        if col in row and pd.notna(row[col]):
+            theta.append(f)
+            r.append(row[col])
+
+    if len(theta) < 3:
+        st.info("因子数据不足，无法绘制雷达图")
+        return
+
+    fig = go.Figure(data=go.Scatterpolar(
+        r=r + [r[0]],
+        theta=theta + [theta[0]],
+        fill='toself',
+        name='该股票'
+    ))
+    fig.update_layout(
+        polar=dict(radialaxis=dict(visible=True, range=[0, 100])),
+        showlegend=False,
+        height=400,
+        title=f"交易 {row.get('股票', '')} 因子得分雷达图"
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+    # 显示综合得分和排名
+    col1, col2 = st.columns(2)
+    with col1:
+        score = row.get('综合得分', 0)
+        st.metric("综合得分", f"{score:.1f}" if score else "N/A")
+    with col2:
+        rank = row.get('排名', 0)
+        # 排名可能是 "4 / 8" 格式的字符串，需要解析
+        if isinstance(rank, str) and '/' in rank:
+            rank_num = int(rank.split('/')[0].strip())
+        elif rank:
+            rank_num = int(rank)
+        else:
+            rank_num = None
+        st.metric("当日排名", f"第 {rank_num} 名" if rank_num else "N/A")
+
+
+def _render_rebalance_history(results: Dict[str, Any]):
+    """渲染调仓记录"""
+
+    snapshots = results.get('rebalance_snapshots', [])
+    factor_names = results.get('factor_names', [])
+
+    if not snapshots:
+        st.info("无调仓记录数据")
+        return
+
+    # 调仓时间轴概览
+    st.markdown(f"### 调仓概览（共 {len(snapshots)} 次）")
+
+    overview_data = []
+    for snap in snapshots:
+        overview_data.append({
+            '调仓日期': snap.date,
+            '买入股票数': len(snap.selected_symbols),
+            '卖出股票数': len(snap.sold_symbols),
+            '候选股票数': len(snap.all_scores)
+        })
+    st.dataframe(pd.DataFrame(overview_data), use_container_width=True)
+
+    # 选择单次调仓查看详情
+    st.markdown("### 单次调仓详情")
+    selected_date = st.selectbox(
+        "选择调仓日期",
+        [s.date for s in snapshots],
+        key="mfbt_rebalance_date"
+    )
+
+    snapshot = next((s for s in snapshots if s.date == selected_date), None)
+    if not snapshot:
+        return
+
+    # 显示买入/卖出股票
+    col1, col2 = st.columns(2)
+    with col1:
+        st.markdown("**买入股票**")
+        if snapshot.selected_symbols:
+            for sym in snapshot.selected_symbols:
+                score = snapshot.all_scores.get(sym, 0)
+                st.markdown(f"- `{sym}` 综合得分: {score:.1f}")
+        else:
+            st.caption("无")
+    with col2:
+        st.markdown("**卖出股票**")
+        if snapshot.sold_symbols:
+            for sym in snapshot.sold_symbols:
+                st.markdown(f"- `{sym}`")
+        else:
+            st.caption("无")
+
+    # 因子面板表格
+    if snapshot.all_scores:
+        st.markdown("**当日全部候选股票因子面板**")
+
+        panel_data = []
+        for symbol in sorted(snapshot.all_scores.keys(), key=lambda x: snapshot.all_scores.get(x, 0), reverse=True):
+            row = {'股票': symbol, '综合得分': round(snapshot.all_scores.get(symbol, 0), 1)}
+
+            # 因子原始值
+            vals = snapshot.all_factor_values.get(symbol, {})
+            for f in factor_names:
+                if f in vals:
+                    row[f] = round(vals[f], 4) if isinstance(vals[f], float) else vals[f]
+
+            # 因子百分位得分
+            percs = snapshot.all_factor_percentiles.get(symbol, {})
+            for f in factor_names:
+                if f in percs:
+                    row[f'{f}_得分'] = round(percs[f], 1)
+
+            # 是否被选中
+            row['是否买入'] = '是' if symbol in snapshot.selected_symbols else '否'
+            row['是否卖出'] = '是' if symbol in snapshot.sold_symbols else '否'
+
+            panel_data.append(row)
+
+        panel_df = pd.DataFrame(panel_data)
+
+        # 高亮显示
+        def highlight_selected(row_df):
+            if row_df['是否买入'] == '是':
+                return ['background-color: #d4edda'] * len(row_df)
+            elif row_df['是否卖出'] == '是':
+                return ['background-color: #f8d7da'] * len(row_df)
+            return [''] * len(row_df)
+
+        styled = panel_df.style.apply(highlight_selected, axis=1)
+        st.dataframe(styled, use_container_width=True)
+
+        # 因子得分热力图
+        if factor_names and any(f'{f}_得分' in panel_df.columns for f in factor_names):
+            st.markdown("**因子得分热力图**")
+            score_cols = [f'{f}_得分' for f in factor_names if f'{f}_得分' in panel_df.columns]
+            if score_cols:
+                heatmap_df = panel_df[['股票'] + score_cols].set_index('股票')
+                fig = go.Figure(data=go.Heatmap(
+                    z=heatmap_df.values,
+                    x=heatmap_df.columns,
+                    y=heatmap_df.index,
+                    colorscale='RdYlGn',
+                    zmin=0, zmax=100,
+                    text=heatmap_df.values,
+                    texttemplate="%{text:.0f}",
+                    textfont={"size": 10}
+                ))
+                fig.update_layout(height=max(300, len(heatmap_df) * 25 + 100))
+                st.plotly_chart(fig, use_container_width=True)
 
 
 def _render_config_management(results: Dict[str, Any]):
