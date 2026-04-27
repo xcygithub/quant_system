@@ -26,6 +26,7 @@ from quant_system.portfolio.multi_stock_backtest import MultiStockBacktest
 from quant_system.portfolio.multi_factor_backtest import run_multi_factor_backtest
 from quant_system.portfolio.signal_scanner import SignalScanner, ScanResult, ScanSignal
 from quant_system.web.factor_backtest_page import render_factor_backtest_page, FACTOR_CATEGORIES, DEFAULT_FACTORS
+from quant_system.web.factor_analysis_page import render_factor_analysis_page
 from quant_system.web.pages.data_management import render_data_management_page
 
 # 页面配置
@@ -1733,8 +1734,7 @@ with tab5:
 
 # Tab 6: 因子分析
 with tab6:
-    st.header("🔬 因子分析")
-    st.info("因子分析功能开发中...")
+    render_factor_analysis_page(dm, wl_manager)
 
 # Tab 7: 财务数据管理
 with tab7:

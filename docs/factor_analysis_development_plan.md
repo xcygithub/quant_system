@@ -164,20 +164,33 @@ class FundamentalFactors:
 - [ ] 单股全量因子计算与展示
 - [ ] 因子格式化输出（保留小数位、单位）
 - [ ] 因子方向标注（正向/负向）
-- [ ] 数据时效性提示
+- [ ] 数据时效性提示（显示数据截止日期）
+- [ ] 日期选择器支持（"最新"或指定财报截止日期）
+
+**日期维度支持**:
+```python
+def get_factors_by_date(self, symbol: str, date_option: str = "最新") -> Dict:
+    """
+    获取指定日期的因子值
+    - date_option="最新": 自动选择最近可用的财报
+    - date_option="2024-03-31": 使用指定财报截止日期
+    """
+```
 
 #### T2.2: 因子分析 Tab 页面
 **文件**: `web/factor_analysis_page.py` (新建)
 
 **UI组件**:
 - [ ] 股票搜索下拉框（支持模糊匹配）
+- [ ] **日期选择器**（默认"最新"，支持切换特定财报截止日期）
 - [ ] 因子类别选择器
-- [ ] 单因子展示卡片
-- [ ] 全量因子表格
+- [ ] 单因子展示卡片（包含数据截止日期标注）
+- [ ] 全量因子表格（包含数据截止日期列）
 - [ ] 计算按钮组
 
 **交互逻辑**:
 - [ ] 选择股票后自动加载因子
+- [ ] 切换日期时重新加载对应财报日期的因子
 - [ ] 因子表格支持排序
 - [ ] 计算进度条展示
 
@@ -195,14 +208,16 @@ class FundamentalFactors:
 **功能**:
 - [ ] 股票复选框组
 - [ ] 单因子排名柱状图
-- [ ] 排名表格（含行业对比）
-- [ ] 导出CSV功能
+- [ ] 排名表格（含行业对比、数据截止日期）
+- [ ] 导出CSV功能（含日期列）
+- [ ] **多股排名时统一使用同一个财报截止日期**
 
 #### T3.2: 多股多因子热力图
 **功能**:
 - [ ] 多因子选择器
 - [ ] 热力图可视化
 - [ ] 对比矩阵表格
+- [ ] **统一日期维度展示**
 
 #### T3.3: 一键计算全市场
 **功能**:
@@ -271,7 +286,103 @@ class FundamentalFactors:
 
 ## 六、技术要点
 
-### 6.1 财报时间滞后处理
+### 6.1 日期维度设计（重要）
+
+**因子值随日期变化的处理**：
+
+因子值的核心是：找到指定查询日期之前最新发布的财务报表进行计算。
+
+```python
+def get_report_date(trade_date: str) -> str:
+    """
+    根据查询日期返回最近可用的财报截止日期
+
+    参数:
+        trade_date: 查询日期，格式 'YYYY-MM-DD'
+
+    返回:
+        财报截止日期，格式 'YYYY-MM-DD'
+
+    财报发布节奏:
+        - 年报: 截止12-31，最晚次年4-30发布
+        - 一季报: 截止03-31，最晚次年4-30发布
+        - 中报: 截止06-30，最晚次年8-31发布
+        - 三季报: 截止09-30，最晚次年10-31发布
+    """
+    td = pd.to_datetime(trade_date)
+
+    # 找到最近的可用于计算的财报截止日期
+    # 需要考虑财报发布滞后：通常滞后45天
+    cutoff = td - pd.Timedelta(days=45)
+
+    # 定义财报截止日期（按时间倒序）
+    report_dates = [
+        # 年报
+        (f'{y}-12-31', f'{y+1}-04-30'),
+        # 一季报
+        (f'{y}-03-31', f'{y+1}-04-30'),
+        # 中报
+        (f'{y}-06-30', f'{y+1}-08-31'),
+        # 三季报
+        (f'{y}-09-30', f'{y+1}-10-31'),
+    ]
+
+    # 查找第一个满足条件的财报
+    for report_date, deadline in report_dates:
+        if pd.to_datetime(deadline) <= cutoff:
+            return report_date
+
+    # 如果都满足不了，返回最早的财报
+    return '2020-12-31'
+```
+
+**日期选择器设计**：
+
+```python
+# UI 中的日期选择
+date_options = [
+    "最新",                    # 自动选择最近可用财报
+    "2024-03-31 (一季报)",
+    "2023-12-31 (年报)",
+    "2023-09-30 (三季报)",
+    "2023-06-30 (中报)",
+    "2023-03-31 (一季报)",
+    "2022-12-31 (年报)",
+]
+```
+
+**因子查询时的日期处理**：
+
+```python
+def get_factors_on_date(self, symbol: str, date_option: str = "最新") -> Dict:
+    """
+    获取指定日期的因子值
+
+    参数:
+        symbol: 股票代码
+        date_option: "最新" 或具体日期 "2024-03-31"
+
+    返回:
+        包含因子值和数据截止日期的字典
+    """
+    if date_option == "最新":
+        trade_date = datetime.now().strftime('%Y-%m-%d')
+    else:
+        trade_date = date_option
+
+    report_date = get_report_date(trade_date)
+
+    # 计算因子
+    factors = self.ff.calculate_all_factors(symbol, report_date)
+
+    return {
+        'factors': factors,
+        'report_date': report_date,  # 返回实际使用的财报截止日期
+        'query_date': trade_date,    # 返回用户选择的查询日期
+    }
+```
+
+### 6.2 财报时间滞后处理
 ```python
 def get_latest_financial_data(symbol, trade_date):
     """
@@ -282,7 +393,7 @@ def get_latest_financial_data(symbol, trade_date):
     # 前推45天作为实际可发布时间
 ```
 
-### 6.2 数据频率匹配
+### 6.3 数据频率匹配
 ```python
 def forward_fill_quarterly_factor(factor_series: pd.Series) -> pd.Series:
     """
@@ -292,7 +403,7 @@ def forward_fill_quarterly_factor(factor_series: pd.Series) -> pd.Series:
     return factor_series.resample('D').ffill()
 ```
 
-### 6.3 行业分类映射
+### 6.4 行业分类映射
 ```python
 # 使用 Baostock 的行业分类或自定义映射表
 INDUSTRY_MAP = {
