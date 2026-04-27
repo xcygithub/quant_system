@@ -26,6 +26,7 @@ from quant_system.portfolio.multi_stock_backtest import MultiStockBacktest
 from quant_system.portfolio.multi_factor_backtest import run_multi_factor_backtest
 from quant_system.portfolio.signal_scanner import SignalScanner, ScanResult, ScanSignal
 from quant_system.web.factor_backtest_page import render_factor_backtest_page, FACTOR_CATEGORIES, DEFAULT_FACTORS
+from quant_system.web.pages.data_management import render_data_management_page
 
 # 页面配置
 st.set_page_config(
@@ -91,14 +92,15 @@ wl_manager = get_watchlist_manager()
 st.markdown('<h1 class="main-header">📈 量化交易系统</h1>', unsafe_allow_html=True)
 
 # 创建标签页
-# 6个标签页：自选股管理、策略回测、多因子回测、信号扫描、绩效分析、因子分析
-tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+# 7个标签页：自选股管理、策略回测、多因子回测、信号扫描、绩效分析、因子分析、财务数据管理
+tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
     "⭐ 自选股管理",
     "🎯 策略回测",
     "📊 多因子回测",
     "📈 信号扫描",
     "📉 绩效分析",
-    "🔬 因子分析"
+    "🔬 因子分析",
+    "📥 财务数据管理"
 ])
 
 # 辅助函数：获取最近交易日行情（仅从数据库读取，不触发网络更新）
@@ -1733,6 +1735,10 @@ with tab5:
 with tab6:
     st.header("🔬 因子分析")
     st.info("因子分析功能开发中...")
+
+# Tab 7: 财务数据管理
+with tab7:
+    render_data_management_page()
 
 # 页脚
 st.markdown("---")

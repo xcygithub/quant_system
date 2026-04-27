@@ -163,7 +163,8 @@ class FinancialDataSaver:
         records = 0
         for _, row in df.iterrows():
             try:
-                report_date = row.get('date', '')
+                # Baostock 返回的字段是 statDate 而不是 date
+                report_date = row.get('statDate', '') or row.get('date', '')
                 if not report_date:
                     continue
 
@@ -222,7 +223,8 @@ class FinancialDataSaver:
         records = 0
         for _, row in df.iterrows():
             try:
-                report_date = row.get('date', '')
+                # Baostock 返回的字段是 statDate 而不是 date
+                report_date = row.get('statDate', '') or row.get('date', '')
                 if not report_date:
                     continue
 
@@ -273,18 +275,22 @@ class FinancialDataSaver:
         records = 0
         for _, row in df.iterrows():
             try:
-                report_date = row.get('date', '')
+                # Baostock 返回的字段是 statDate 而不是 date
+                report_date = row.get('statDate', '') or row.get('date', '')
                 if not report_date:
                     continue
 
+                report_type = self._get_report_type(report_date)
+
                 cursor.execute('''
                     INSERT OR REPLACE INTO dupont_data
-                    (symbol, report_date, roe, asset_turnover, equity_multiplier,
+                    (symbol, report_date, report_type, roe, asset_turnover, equity_multiplier,
                      net_profit_margin, sales_to_grs, update_time)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                 ''', (
                     symbol or row.get('symbol', ''),
                     report_date,
+                    report_type,
                     self._to_float(row.get('roe', 0)),
                     self._to_float(row.get('assetStoTurn', 0)),
                     self._to_float(row.get('equityMultipler', 0)),
@@ -322,7 +328,8 @@ class FinancialDataSaver:
         records = 0
         for _, row in df.iterrows():
             try:
-                report_date = row.get('date', '')
+                # Baostock 返回的字段是 statDate 而不是 date
+                report_date = row.get('statDate', '') or row.get('date', '')
                 if not report_date:
                     continue
 
@@ -372,7 +379,8 @@ class FinancialDataSaver:
         records = 0
         for _, row in df.iterrows():
             try:
-                report_date = row.get('date', '')
+                # Baostock 返回的字段是 statDate 而不是 date
+                report_date = row.get('statDate', '') or row.get('date', '')
                 if not report_date:
                     continue
 

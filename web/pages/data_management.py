@@ -1,0 +1,540 @@
+"""
+财务数据管理页面
+独立页面管理所有财务数据源
+"""
+import streamlit as st
+import pandas as pd
+import sqlite3
+import time
+from datetime import datetime, timedelta
+from typing import Dict, List, Optional
+
+# 导入后端模块
+# 注意：app.py 中的 project_root 是 Claw 目录 (Path(__file__).parent.parent.parent)
+# 所以需要添加 Claw 到 sys.path，然后通过 quant_system.xxx 导入
+try:
+    from quant_system.data.data_manager import DataManager
+    from quant_system.data.financial_data_source import FinancialDataSource
+    from quant_system.data.financial_data_manager import FinancialDataManager
+    from quant_system.data.financial_data_saver import FinancialDataSaver
+    from quant_system.portfolio.watchlist import WatchlistManager
+except ImportError:
+    import sys
+    from pathlib import Path
+    # 当作为独立页面或独立运行时，需要添加项目根目录到路径
+    # pages/data_management.py -> web/pages -> quant_system -> Claw
+    project_root = Path(__file__).parent.parent.parent  # = Claw 目录
+    sys.path.insert(0, str(project_root))
+    from quant_system.data.data_manager import DataManager
+    from quant_system.data.financial_data_source import FinancialDataSource
+    from quant_system.data.financial_data_manager import FinancialDataManager
+    from quant_system.data.financial_data_saver import FinancialDataSaver
+    from quant_system.portfolio.watchlist import WatchlistManager
+
+
+# =============================================================================
+# 页面配置
+# =============================================================================
+
+st.set_page_config(
+    page_title="财务数据管理",
+    page_icon="📥",
+    layout="wide"
+)
+
+
+# =============================================================================
+# 辅助函数
+# =============================================================================
+
+def get_data_status() -> Dict[str, dict]:
+    """
+    获取各数据表的状态信息
+
+    Returns:
+        {表名: {记录数, 最新日期, 说明}}
+    """
+    dm = DataManager()
+
+    status = {}
+
+    # 1. 估值数据
+    try:
+        conn = sqlite3.connect(dm.db_path)
+        cursor = conn.cursor()
+
+        # valuation_data
+        cursor.execute("SELECT COUNT(*), MAX(trade_date) FROM valuation_data")
+        row = cursor.fetchone()
+        status['valuation_data'] = {
+            'count': row[0] or 0,
+            'latest_date': row[1] or '无',
+            'desc': '实时估值（PE/PB/PS/PCF）'
+        }
+
+        # profit_data (使用 report_date)
+        cursor.execute("SELECT COUNT(*), MAX(report_date) FROM profit_data")
+        row = cursor.fetchone()
+        status['profit_data'] = {
+            'count': row[0] or 0,
+            'latest_date': row[1] or '无',
+            'desc': '利润表'
+        }
+
+        # balance_data (使用 report_date)
+        cursor.execute("SELECT COUNT(*), MAX(report_date) FROM balance_data")
+        row = cursor.fetchone()
+        status['balance_data'] = {
+            'count': row[0] or 0,
+            'latest_date': row[1] or '无',
+            'desc': '资产负债表'
+        }
+
+        # cash_flow_data (使用 report_date)
+        cursor.execute("SELECT COUNT(*), MAX(report_date) FROM cash_flow_data")
+        row = cursor.fetchone()
+        status['cash_flow_data'] = {
+            'count': row[0] or 0,
+            'latest_date': row[1] or '无',
+            'desc': '现金流量表'
+        }
+
+        # dupont_data (使用 report_date)
+        cursor.execute("SELECT COUNT(*), MAX(report_date) FROM dupont_data")
+        row = cursor.fetchone()
+        status['dupont_data'] = {
+            'count': row[0] or 0,
+            'latest_date': row[1] or '无',
+            'desc': '杜邦分析'
+        }
+
+        # growth_data (使用 report_date)
+        cursor.execute("SELECT COUNT(*), MAX(report_date) FROM growth_data")
+        row = cursor.fetchone()
+        status['growth_data'] = {
+            'count': row[0] or 0,
+            'latest_date': row[1] or '无',
+            'desc': '成长能力'
+        }
+
+        # operation_data (使用 report_date)
+        cursor.execute("SELECT COUNT(*), MAX(report_date) FROM operation_data")
+        row = cursor.fetchone()
+        status['operation_data'] = {
+            'count': row[0] or 0,
+            'latest_date': row[1] or '无',
+            'desc': '营运能力'
+        }
+
+        # debtpaying_data (使用 report_date)
+        cursor.execute("SELECT COUNT(*), MAX(report_date) FROM debtpaying_data")
+        row = cursor.fetchone()
+        status['debtpaying_data'] = {
+            'count': row[0] or 0,
+            'latest_date': row[1] or '无',
+            'desc': '偿债能力'
+        }
+
+        # daily_kline
+        cursor.execute("SELECT COUNT(*), MAX(date) FROM daily_kline")
+        row = cursor.fetchone()
+        status['daily_kline'] = {
+            'count': row[0] or 0,
+            'latest_date': row[1] or '无',
+            'desc': '日线行情'
+        }
+
+        conn.close()
+    except Exception as e:
+        st.error(f"获取数据状态失败: {e}")
+
+    return status
+
+
+def get_stock_count() -> int:
+    """获取自选股数量"""
+    try:
+        wl = WatchlistManager()
+        return len(wl.get_all_stocks())
+    except:
+        return 0
+
+
+# =============================================================================
+# 页面渲染
+# =============================================================================
+
+def render_data_management_page():
+    """渲染财务数据管理页面"""
+
+    st.header("📥 财务数据管理")
+
+    # 获取数据状态
+    status = get_data_status()
+    watchlist_count = get_stock_count()
+
+    # -------------------------------------------------------------------------
+    # 1. 数据源状态总览
+    # -------------------------------------------------------------------------
+    st.subheader("📊 数据源状态总览")
+
+    # 显示指标卡片
+    col1, col2, col3, col4 = st.columns(4)
+
+    with col1:
+        total_records = sum(s['count'] for s in status.values())
+        st.metric("总记录数", f"{total_records:,}")
+
+    with col2:
+        stock_count = status.get('valuation_data', {}).get('count', 0)
+        st.metric("股票数", f"{stock_count:,}")
+
+    with col3:
+        latest_kline = status.get('daily_kline', {}).get('latest_date', '无')
+        st.metric("行情最新", latest_kline)
+
+    with col4:
+        latest_financial = status.get('profit_data', {}).get('latest_date', '无')
+        st.metric("财务最新", latest_financial)
+
+    # 数据表状态表格
+    st.divider()
+
+    status_df = pd.DataFrame([
+        {
+            "数据类型": info['desc'],
+            "表名": table,
+            "记录数": f"{info['count']:,}",
+            "最新日期": info['latest_date']
+        }
+        for table, info in status.items()
+    ])
+
+    if not status_df.empty:
+        st.dataframe(
+            status_df,
+            use_container_width=True,
+            hide_index=True
+        )
+
+    st.divider()
+
+    # -------------------------------------------------------------------------
+    # 2. 获取方式选择
+    # -------------------------------------------------------------------------
+    st.subheader("🔄 获取财务数据")
+
+    fetch_mode = st.radio(
+        "获取范围",
+        options=["全市场", "自选股", "单只股票"],
+        horizontal=True,
+        help="全市场：获取A股所有股票的财务数据（耗时较长）\n自选股：只获取自选股列表中的股票\n单只股票：手动输入股票代码"
+    )
+
+    # 数据类型选择（支持6种财务数据，偿债能力无独立接口）
+    data_type_options = {
+        "利润表": "profit",
+        "资产负债表": "balance",
+        "现金流量表": "cash",
+        "杜邦分析": "dupont",
+        "成长能力": "growth",
+        "营运能力": "operation",
+    }
+
+    selected_labels = st.multiselect(
+        "数据类型",
+        options=list(data_type_options.keys()),
+        default=["利润表", "资产负债表", "现金流量表", "杜邦分析", "成长能力", "营运能力"],
+        help="选择要获取的财务数据类型（6种：利润表、资产负债表、现金流量表、杜邦分析、成长能力、营运能力）"
+    )
+
+    # 转换为简写格式（batch_update 使用的格式）
+    data_types = [data_type_options[label] for label in selected_labels]
+
+    # 时间范围（仅支持 start_year）
+    start_year = st.number_input(
+        "起始年份",
+        min_value=2010,
+        max_value=datetime.now().year,
+        value=datetime.now().year - 3,
+        help="财务数据的历史范围（最近 N 年）"
+    )
+
+    # 获取按钮
+    col_btn1, col_btn2, col_btn3 = st.columns([1, 1, 2])
+
+    with col_btn1:
+        fetch_button = st.button("🚀 开始获取", type="primary", use_container_width=True)
+
+    with col_btn2:
+        fetch_valuation = st.button("📈 获取实时估值", use_container_width=True, help="快速更新全市场PE/PB/PS等估值数据")
+
+    # -------------------------------------------------------------------------
+    # 3. 执行获取
+    # -------------------------------------------------------------------------
+    if fetch_button:
+        if not data_types:
+            st.warning("请至少选择一种数据类型")
+        else:
+            symbols = []
+            mode_desc = ""
+
+            if fetch_mode == "全市场":
+                mode_desc = "全市场 A 股"
+                with st.spinner("正在获取股票列表..."):
+                    fdn = FinancialDataManager()
+                    all_stocks = fdn.get_all_stocks()
+                    symbols = all_stocks if all_stocks else []
+                if not symbols:
+                    st.error("获取股票列表失败，请检查网络连接")
+            elif fetch_mode == "自选股":
+                mode_desc = f"自选股 ({watchlist_count} 只)"
+                wl = WatchlistManager()
+                symbols = [s.symbol for s in wl.get_all_stocks()]
+            else:
+                symbol_input = st.text_input("请输入股票代码", placeholder="000001.SZ")
+                if symbol_input:
+                    symbols = [symbol_input.upper()]
+                    mode_desc = f"单只股票 {symbol_input}"
+
+            if symbols:
+                st.info(f"准备获取 {mode_desc} 的 {len(data_types)} 种财务数据，从 {start_year} 年至今...")
+
+                # 初始化进度条
+                progress_bar = st.progress(0)
+                progress_text = st.empty()
+
+                def progress_callback(current: int, total: int, symbol: str):
+                    pct = current / total if total > 0 else 0
+                    progress_bar.progress(pct)
+                    progress_text.text(f"进度: {current}/{total} - {symbol}")
+
+                # 执行获取
+                fdn = FinancialDataManager()
+
+                try:
+                    with st.spinner("正在从 Baostock 获取数据（请耐心等待）..."):
+                        result = fdn.batch_update(
+                            symbols=symbols,
+                            data_types=data_types,
+                            start_year=start_year,
+                            progress_callback=progress_callback
+                        )
+
+                    progress_bar.empty()
+                    progress_text.empty()
+
+                    # 显示结果（batch_update 返回 Dict[str, int]，key 是数据类型，value 是记录数）
+                    total_records = sum(result.values())
+                    st.success(f"获取完成！共保存 {total_records} 条财务数据记录")
+
+                    # 显示各类型明细
+                    with st.expander("查看各数据类型记录数"):
+                        for dtype, count in result.items():
+                            st.write(f"  - {dtype}: {count} 条")
+
+                    # 刷新状态
+                    st.rerun()
+
+                except Exception as e:
+                    progress_bar.empty()
+                    progress_text.empty()
+                    st.error(f"获取失败: {e}")
+
+    # 获取实时估值
+    if fetch_valuation:
+        # 根据 fetch_mode 确定获取范围
+        valuation_symbols = []
+        mode_desc = ""
+
+        if fetch_mode == "全市场":
+            mode_desc = "全市场"
+            fds = FinancialDataSource()
+            valuation_symbols = fds.get_all_stocks()
+            fds.logout()
+        elif fetch_mode == "自选股":
+            wl = WatchlistManager()
+            stocks = wl.get_all_stocks()
+            valuation_symbols = [s.symbol for s in stocks]
+            mode_desc = f"自选股 ({len(valuation_symbols)} 只)"
+        else:
+            # 单只股票模式需要在输入框中获取股票代码
+            st.warning("请在下方输入股票代码（如 000001.SZ），然后点击获取实时估值")
+            valuation_symbols = []  # 清空，等待用户输入
+
+        if valuation_symbols:
+            st.info(f"准备获取 {mode_desc} 的估值数据，共 {len(valuation_symbols)} 只股票...")
+
+            with st.spinner(f"正在获取 {mode_desc} 估值数据..."):
+                try:
+                    fds = FinancialDataSource()
+
+                    if fetch_mode == "全市场":
+                        df = fds.get_all_stocks_valuation()
+                    else:
+                        # 自选股或单只股票：遍历获取
+                        all_data = []
+                        today = datetime.now().strftime('%Y-%m-%d')
+                        progress_bar = st.progress(0)
+                        progress_text = st.empty()
+
+                        for i, symbol in enumerate(valuation_symbols):
+                            pct = (i + 1) / len(valuation_symbols)
+                            progress_bar.progress(pct)
+                            progress_text.text(f"进度: {i+1}/{len(valuation_symbols)} - {symbol}")
+
+                            df_stock = fds.get_history_valuation(symbol, today, today)
+                            if not df_stock.empty:
+                                all_data.append(df_stock)
+
+                        progress_bar.empty()
+                        progress_text.empty()
+
+                        if all_data:
+                            df = pd.concat(all_data, ignore_index=True)
+                        else:
+                            df = pd.DataFrame()
+
+                    if not df.empty:
+                        saver = FinancialDataSaver()
+                        saved = saver.save_valuation_data(df)
+                        st.success(f"✅ 成功获取并保存 {saved} 只股票的估值数据")
+
+                        # 显示部分数据
+                        with st.expander("查看最新估值数据（前10只）"):
+                            display_df = df.head(10)[['symbol', 'trade_date', 'pe_ttm', 'pb', 'ps', 'pcf', 'close']]
+                            st.dataframe(display_df, use_container_width=True)
+                    else:
+                        st.warning("未获取到估值数据")
+
+                    fds.logout()
+                    st.rerun()
+
+                except Exception as e:
+                    st.error(f"获取估值数据失败: {e}")
+        elif fetch_mode == "单只股票":
+            st.info("请先输入股票代码再获取估值")
+
+    st.divider()
+
+    # -------------------------------------------------------------------------
+    # 4. 批量操作
+    # -------------------------------------------------------------------------
+    st.subheader("🛠️ 批量操作")
+
+    col_batch1, col_batch2, col_batch3 = st.columns(3)
+
+    with col_batch1:
+        if st.button("📋 查看数据库表结构", use_container_width=True):
+            with st.expander("数据库表结构", expanded=True):
+                dm = DataManager()
+                conn = sqlite3.connect(dm.db_path)
+                cursor = conn.cursor()
+
+                # 获取所有表
+                cursor.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+                tables = cursor.fetchall()
+
+                for table in tables:
+                    table_name = table[0]
+                    st.markdown(f"**{table_name}**")
+
+                    # 获取表结构
+                    cursor.execute(f"PRAGMA table_info({table_name})")
+                    columns = cursor.fetchall()
+                    col_df = pd.DataFrame(columns, columns=['cid', 'name', 'type', 'notnull', 'dflt_value', 'pk'])
+                    st.dataframe(col_df[['name', 'type', 'pk']], use_container_width=True, hide_index=True)
+
+                conn.close()
+
+    with col_batch2:
+        if st.button("🗑️ 清除财务数据", use_container_width=True):
+            st.warning("⚠️ 此操作将清除所有财务数据，确认吗？")
+            col_confirm1, col_confirm2 = st.columns(2)
+            with col_confirm1:
+                if st.button("确认清除", type="primary"):
+                    try:
+                        dm = DataManager()
+                        conn = sqlite3.connect(dm.db_path)
+                        cursor = conn.cursor()
+
+                        tables_to_clear = [
+                            'profit_data', 'balance_data', 'cash_flow_data',
+                            'dupont_data', 'growth_data', 'operation_data',
+                            'debtpaying_data'
+                        ]
+
+                        for table in tables_to_clear:
+                            cursor.execute(f"DELETE FROM {table}")
+                            st.success(f"已清除 {table}")
+
+                        conn.commit()
+                        conn.close()
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"清除失败: {e}")
+            with col_confirm2:
+                if st.button("取消"):
+                    pass
+
+    with col_batch3:
+        if st.button("🔄 刷新状态", use_container_width=True):
+            st.rerun()
+
+    st.divider()
+
+    # -------------------------------------------------------------------------
+    # 5. 财报披露日历提示
+    # -------------------------------------------------------------------------
+    st.subheader("📅 财报披露日历")
+
+    current_month = datetime.now().month
+    current_day = datetime.now().day
+
+    tips = []
+
+    if current_month < 5 or (current_month == 5 and current_day < 15):
+        tips.append("📌 **年报 + 一季报** 披露期（1月-4月30日）")
+        tips.append("   预计5月15日后可获取完整数据")
+    elif current_month < 9 or (current_month == 9 and current_day < 15):
+        tips.append("📌 **中报** 披露期（7月-8月31日）")
+        tips.append("   预计9月15日后可获取完整数据")
+    elif current_month < 11 or (current_month == 11 and current_day < 15):
+        tips.append("📌 **三季报** 披露期（10月1日-10月31日）")
+        tips.append("   预计11月15日后可获取完整数据")
+    else:
+        tips.append("✅ 当前为财报真空期，所有最新财报已可获取")
+
+    for tip in tips:
+        st.markdown(tip)
+
+    # -------------------------------------------------------------------------
+    # 6. 使用说明
+    # -------------------------------------------------------------------------
+    with st.expander("📖 使用说明"):
+        st.markdown("""
+        **数据来源**: Baostock (https://www.baostock.com)
+
+        **获取频率建议**:
+        - 估值数据（PE/PB/PS）: 每日获取
+        - 财务数据（利润表/资产负债表等）: 每季度获取
+
+        **财报披露时间**:
+        - 年报: 次年4月30日前
+        - 一季报: 次年4月30日前
+        - 中报: 次年8月31日前
+        - 三季报: 次年10月31日前
+
+        **注意事项**:
+        1. 全市场获取耗时较长（约15-30分钟），建议分批获取
+        2. Baostock API 有访问限制，请勿频繁请求
+        3. 获取过程中请勿关闭页面
+        """)
+
+
+# =============================================================================
+# 入口
+# =============================================================================
+
+if __name__ == "__main__":
+    render_data_management_page()

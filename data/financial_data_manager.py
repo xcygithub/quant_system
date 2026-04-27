@@ -50,14 +50,15 @@ class FinancialDataManager:
         Args:
             symbol: 股票代码，如 '000001.SZ'
             data_types: 要更新的数据类型列表
-                        如 ['profit', 'balance', 'cash', 'dupont']
+                        如 ['profit', 'balance', 'cash', 'dupont', 'growth', 'operation', 'debtpaying']
             start_year: 起始年份，默认最近3年
 
         Returns:
             Dict[str, int]: 每种类型的更新记录数
         """
         if data_types is None:
-            data_types = ['profit', 'balance', 'cash', 'dupont']
+            # 默认更新6种财务数据（偿债能力无独立接口，已从 balance_data 获取）
+            data_types = ['profit', 'balance', 'cash', 'dupont', 'growth', 'operation']
 
         if start_year is None:
             start_year = datetime.now().year - 3
@@ -66,39 +67,74 @@ class FinancialDataManager:
 
         print(f"\n{'='*50}")
         print(f"更新 {symbol} 财务数据 (从 {start_year} 年至今)")
+        print(f"数据类型: {data_types}")
         print(f"{'='*50}")
+
+        total_types = len(data_types)
+        step = 1
 
         # 利润表
         if 'profit' in data_types:
-            print(f"\n[1/4] 获取利润表数据...")
+            print(f"\n[{step}/{total_types}] 获取利润表数据...")
             df = self.source.get_profit_data(symbol, start_year=start_year)
             count = self.saver.save_profit_data(df, symbol)
             results['profit'] = count
             print(f"    -> 保存 {count} 条记录")
+            step += 1
 
         # 资产负债表
         if 'balance' in data_types:
-            print(f"\n[2/4] 获取资产负债表...")
+            print(f"\n[{step}/{total_types}] 获取资产负债表...")
             df = self.source.get_balance_data(symbol, start_year=start_year)
             count = self.saver.save_balance_data(df, symbol)
             results['balance'] = count
             print(f"    -> 保存 {count} 条记录")
+            step += 1
 
         # 现金流量表
         if 'cash' in data_types:
-            print(f"\n[3/4] 获取现金流量表...")
+            print(f"\n[{step}/{total_types}] 获取现金流量表...")
             df = self.source.get_cash_flow_data(symbol, start_year=start_year)
             count = self.saver.save_cash_flow_data(df, symbol)
             results['cash'] = count
             print(f"    -> 保存 {count} 条记录")
+            step += 1
 
         # 杜邦分析
         if 'dupont' in data_types:
-            print(f"\n[4/4] 获取杜邦分析数据...")
+            print(f"\n[{step}/{total_types}] 获取杜邦分析数据...")
             df = self.source.get_dupont_data(symbol, start_year=start_year)
             count = self.saver.save_dupont_data(df, symbol)
             results['dupont'] = count
             print(f"    -> 保存 {count} 条记录")
+            step += 1
+
+        # 成长能力
+        if 'growth' in data_types:
+            print(f"\n[{step}/{total_types}] 获取成长能力数据...")
+            df = self.source.get_growth_data(symbol, start_year=start_year)
+            count = self.saver.save_growth_data(df, symbol)
+            results['growth'] = count
+            print(f"    -> 保存 {count} 条记录")
+            step += 1
+
+        # 营运能力
+        if 'operation' in data_types:
+            print(f"\n[{step}/{total_types}] 获取营运能力数据...")
+            df = self.source.get_operation_data(symbol, start_year=start_year)
+            count = self.saver.save_operation_data(df, symbol)
+            results['operation'] = count
+            print(f"    -> 保存 {count} 条记录")
+            step += 1
+
+        # 偿债能力（Baostock 无独立接口，跳过）
+        # if 'debtpaying' in data_types:
+        #     print(f"\n[{step}/{total_types}] 获取偿债能力数据...")
+        #     df = self.source.get_debtpaying_data(symbol, start_year=start_year)
+        #     count = self.saver.save_debtpaying_data(df, symbol)
+        #     results['debtpaying'] = count
+        #     print(f"    -> 保存 {count} 条记录")
+        #     step += 1
 
         print(f"\n{'='*50}")
         print(f"{symbol} 更新完成")
@@ -125,7 +161,8 @@ class FinancialDataManager:
             Dict[str, int]: 每种类型的总更新记录数
         """
         if data_types is None:
-            data_types = ['profit', 'balance', 'cash', 'dupont']
+            # 默认更新6种财务数据（偿债能力无独立接口）
+            data_types = ['profit', 'balance', 'cash', 'dupont', 'growth', 'operation']
 
         total_results = {dt: 0 for dt in data_types}
         total = len(symbols)
@@ -397,6 +434,8 @@ class FinancialDataManager:
 
         conn.close()
         return age_days <= max_age_days
+
+    # ========== 数据新鲜度检查 ==========
 
     def get_data_freshness(self, symbol: str) -> Dict[str, Dict]:
         """

@@ -428,58 +428,101 @@ class FinancialDataSource:
         return result
 
     # ========== 偿债能力 ==========
+    # 注意：Baostock 没有独立的 query_debtpaying_data 接口
+    # 偿债能力指标（流动比率、速动比率、现金比率）包含在 query_balance_data 中
+    # 此处保留方法签名以兼容接口，但实际数据从资产负债表获取
 
     def get_debtpaying_data(self, symbol: str, start_year: int = None,
                             end_year: int = None) -> pd.DataFrame:
         """
         获取偿债能力数据
-
-        Returns columns: [date, code, currentRatio, quickRatio, cashRatio]
+        
+        注意：Baostock 无独立接口，此方法返回空 DataFrame
+        偿债能力数据应从 balance_data 中提取
         """
+        print(f"  [!] {symbol} 偿债能力数据：Baostock 无独立接口，请从资产负债表获取")
+        return pd.DataFrame()
+
+    # ========== 全市场股票列表 ==========
+
+    def get_all_stocks(self) -> List[str]:
+        """
+        获取所有股票代码列表
+
+        从本地文件加载（沪深300 + 中证500 成分股，共约800只）
+        文件路径: quant_system/all_stocks.json
+
+        Returns:
+            股票代码列表，如 ['000001.SZ', '600000.SH', ...]
+        """
+        import json
+        from pathlib import Path
+
+        # 尝试从文件加载
+        file_path = Path(__file__).parent.parent / "all_stocks.json"
+
+        try:
+            if file_path.exists():
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    symbols = json.load(f)
+                print(f"  [OK] 从文件加载 {len(symbols)} 只股票")
+                return symbols
+        except Exception as e:
+            print(f"  加载股票列表文件失败: {e}")
+
+        # 如果文件不存在或加载失败，尝试用 Baostock 获取
         self._ensure_login()
-        self._rate_limit('query_debtpaying_data')
+        self._rate_limit('query_all_stock')
 
-        if end_year is None:
-            end_year = datetime.now().year
-        if start_year is None:
-            start_year = end_year - 3
+        try:
+            # 获取沪深300
+            hs300 = self._query_index_stocks('hs300')
+            # 获取中证500
+            zz500 = self._query_index_stocks('zz500')
+            # 获取上证50
+            sz50 = self._query_index_stocks('sz50')
 
-        bs_code = self._convert_to_baostock_code(symbol)
-        if bs_code is None:
-            return pd.DataFrame()
+            symbols = list(set(hs300 + zz500 + sz50))
+            print(f"  [OK] 获取全市场 {len(symbols)} 只股票（沪深300+中证500+上证50）")
+            return symbols
 
-        all_data = []
-        for year in range(start_year, end_year + 1):
-            for quarter in [1, 2, 3, 4]:
-                try:
-                    rs = self.bs.query_debtpaying_data(
-                        code=bs_code,
-                        year=str(year),
-                        quarter=str(quarter)
-                    )
+        except Exception as e:
+            print(f"获取股票列表失败: {e}")
+            return []
 
-                    if rs.error_code == '0':
-                        data_list = []
-                        while rs.next():
-                            data_list.append(rs.get_row_data())
-                        if data_list:
-                            df = pd.DataFrame(data_list, columns=rs.fields)
-                            all_data.append(df)
+    def _query_index_stocks(self, index: str) -> List[str]:
+        """
+        获取指数成分股
 
-                    time.sleep(0.1)
+        Args:
+            index: 'hs300', 'zz500', 'sz50'
 
-                except Exception as e:
-                    print(f"  获取 {symbol} {year}Q{quarter} 偿债能力失败: {e}")
-                    continue
+        Returns:
+            股票代码列表
+        """
+        query_funcs = {
+            'hs300': self.bs.query_hs300_stocks,
+            'zz500': self.bs.query_zz500_stocks,
+            'sz50': self.bs.query_sz50_stocks,
+        }
 
-        if not all_data:
-            print(f"  {symbol} 偿债能力数据为空")
-            return pd.DataFrame()
+        if index not in query_funcs:
+            return []
 
-        result = pd.concat(all_data, ignore_index=True)
-        result['symbol'] = symbol
-        print(f"  [OK] {symbol} 获取偿债能力 {len(result)} 条记录")
-        return result
+        rs = query_funcs[index]()
+        if rs.error_code != '0':
+            return []
+
+        symbols = []
+        while rs.next():
+            data = rs.get_row_data()
+            code = data[1]  # 格式如 'sh.600000'
+            if code.startswith('sh.'):
+                symbols.append(f"{code[3:]}.SH")
+            elif code.startswith('sz.'):
+                symbols.append(f"{code[3:]}.SZ")
+
+        return symbols
 
     # ========== 全市场估值数据 ==========
 
@@ -487,19 +530,114 @@ class FinancialDataSource:
         """
         获取所有股票的实时估值数据
 
-        用于批量更新估值表
+        通过 query_history_k_data_plus 遍历获取单只股票数据
+        由于是日频数据，每天只返回一条记录
 
-        Returns columns: [baostock_code, code_name, trade_date, pe, pe_ttm, pb,
-                         ps, pcf, market_cap, float_market_cap, total_shares, float_shares, symbol]
+        Returns columns: [symbol, trade_date, pe_ttm, pb, ps, pcf, close]
         """
         self._ensure_login()
-        self._rate_limit('query_stocks')
+
+        # 获取全市场股票列表
+        symbols = self.get_all_stocks()
+        if not symbols:
+            print("股票列表为空")
+            return pd.DataFrame()
+
+        all_data = []
+        today = datetime.now().strftime('%Y-%m-%d')
+
+        for i, symbol in enumerate(symbols):
+            self._rate_limit('query_history_k_data')
+
+            try:
+                bs_code = self._convert_to_baostock_code(symbol)
+                if bs_code is None:
+                    continue
+
+                rs = self.bs.query_history_k_data_plus(
+                    bs_code,
+                    "date,code,close,peTTM,pbMRQ,psTTM,pcfNcfTTM",
+                    start_date=today,
+                    end_date=today,
+                    frequency="d",
+                    adjustflag="3"
+                )
+
+                if rs.error_code == '0':
+                    data_list = []
+                    while rs.next():
+                        data_list.append(rs.get_row_data())
+
+                    if data_list:
+                        df = pd.DataFrame(data_list, columns=rs.fields)
+                        df['symbol'] = symbol
+                        df = df.rename(columns={
+                            'peTTM': 'pe_ttm',
+                            'pbMRQ': 'pb',
+                            'psTTM': 'ps',
+                            'pcfNcfTTM': 'pcf'
+                        })
+                        # 数值类型转换
+                        for col in ['close', 'pe_ttm', 'pb', 'ps', 'pcf']:
+                            if col in df.columns:
+                                df[col] = pd.to_numeric(df[col], errors='coerce')
+                        all_data.append(df)
+
+                if (i + 1) % 100 == 0:
+                    print(f"  进度: {i+1}/{len(symbols)}")
+
+                time.sleep(0.1)  # 避免请求过快
+
+            except Exception as e:
+                continue
+
+        if not all_data:
+            print("未获取到任何估值数据")
+            return pd.DataFrame()
+
+        result = pd.concat(all_data, ignore_index=True)
+        print(f"  [OK] 获取全市场 {len(result)} 只股票估值数据")
+        return result
+
+    # ========== 单只股票历史估值数据 ==========
+
+    def get_history_valuation(self, symbol: str,
+                              start_date: str = None,
+                              end_date: str = None) -> pd.DataFrame:
+        """
+        获取单只股票的历史估值数据
+
+        Args:
+            symbol: 股票代码，如 '600000.SH'
+            start_date: 开始日期，格式 'YYYY-MM-DD'
+            end_date: 结束日期，格式 'YYYY-MM-DD'
+
+        Returns:
+            DataFrame with columns: [trade_date, symbol, close, pe_ttm, pb, ps, pcf]
+        """
+        self._ensure_login()
+        self._rate_limit('query_history_k_data')
+
+        if end_date is None:
+            end_date = datetime.now().strftime('%Y-%m-%d')
+        if start_date is None:
+            start_date = end_date
+
+        bs_code = self._convert_to_baostock_code(symbol)
+        if bs_code is None:
+            return pd.DataFrame()
 
         try:
-            rs = self.bs.query_stocks()
+            rs = self.bs.query_history_k_data_plus(
+                bs_code,
+                "date,code,close,peTTM,pbMRQ,psTTM,pcfNcfTTM",
+                start_date=start_date,
+                end_date=end_date,
+                frequency="d",
+                adjustflag="3"
+            )
 
             if rs.error_code != '0':
-                print(f"获取股票列表失败: {rs.error_msg}")
                 return pd.DataFrame()
 
             data_list = []
@@ -507,30 +645,28 @@ class FinancialDataSource:
                 data_list.append(rs.get_row_data())
 
             if not data_list:
-                print("股票列表为空")
                 return pd.DataFrame()
 
             df = pd.DataFrame(data_list, columns=rs.fields)
+            df['symbol'] = symbol
 
-            # 转换代码格式
-            df['symbol'] = df['code'].apply(self._convert_from_baostock_code)
-
-            # 重命名列
+            # 重命名字段
             df = df.rename(columns={
-                'code': 'baostock_code',
-                'code_name': 'name',
-                'tradeDate': 'trade_date',
-                'marketCap': 'market_cap',
-                'floatMarketCap': 'float_market_cap',
-                'totalShares': 'total_shares',
-                'floatShares': 'float_shares'
+                'date': 'trade_date',
+                'peTTM': 'pe_ttm',
+                'pbMRQ': 'pb',
+                'psTTM': 'ps',
+                'pcfNcfTTM': 'pcf'
             })
 
-            print(f"  [OK] 获取全市场 {len(df)} 只股票估值数据")
+            # 数值类型转换
+            for col in ['close', 'pe_ttm', 'pb', 'ps', 'pcf']:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
+
             return df
 
         except Exception as e:
-            print(f"获取全市场估值数据失败: {e}")
             return pd.DataFrame()
 
     # ========== 股票基本信息 ==========

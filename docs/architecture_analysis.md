@@ -327,6 +327,7 @@ config.set('data_sources.priority', ['baostock', 'csv'])
 | 2026-04-23 | Streamlit session_state 导致日期选择器默认值不生效 | 待修复 |
 | 2026-04-23 | 回测时 `get_daily_kline` 时效性检查导致请求 today 数据 | ✅ 已修复（2026-04-23）：引入 DataProvider 概念 |
 | 2026-04-22 | `get_latest_quote` 每次刷新都触发网络请求 | 已修复：改为只读数据库 |
+| 2026-04-23 | DataManager 职责过重（get_daily_kline 混合获取-检查-保存逻辑） | ✅ 已修复：KlineManager.fetch_daily_kline() 分载职责 |
 
 ---
 

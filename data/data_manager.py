@@ -1,5 +1,28 @@
 """
 数据管理器 - 统一的数据获取和缓存管理
+
+职责划分（重构后）：
+- DataManager：只负责数据库初始化和连接管理
+- KlineManager：日线/分钟线数据管理（纯读写）
+- FactorManager：因子数据管理（读写）
+- FinancialDataManager：财务数据管理（已有）
+- CachePolicy：缓存策略（完整性检查）
+
+使用示例：
+```python
+from data import DataManager
+
+dm = DataManager()
+
+# 委托给 KlineManager
+df = dm.get_daily_kline("000001.SZ", "2024-01-01", "2024-03-19")
+
+# 委托给 FinancialDataManager
+profit = dm.get_profit("000001.SZ")
+
+# 委托给 FactorManager
+ic_stats = dm.get_ic_statistics()
+```
 """
 import pandas as pd
 import numpy as np
@@ -18,9 +41,20 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from config import DATABASE_PATH, CACHE_DIR
 
 from .data_sources import MultiDataSource
+from .kline_manager import KlineManager
+from .factor_manager import FactorManager
+from .cache_policy import CachePolicy
+
 
 class DataManager:
-    """数据管理器 - 负责数据的获取、缓存和更新"""
+    """
+    数据管理器 - 负责数据的统一入口
+
+    重构后职责：
+    1. 数据库连接和表初始化
+    2. 委托数据操作给专业管理器
+    3. 提供便捷的代理方法（向后兼容）
+    """
 
     def __init__(self, db_path: str = None):
         """
@@ -34,14 +68,22 @@ class DataManager:
         self.db_path = str(db_path)
         self.cache_dir = CACHE_DIR
         self.cache_dir.mkdir(exist_ok=True)
-        self.data_source = MultiDataSource()  # 使用多数据源
+
+        # 初始化子管理器
+        self._kline_mgr = KlineManager(self.db_path)
+        self._factor_mgr = FactorManager(self.db_path)
+        self._data_source = MultiDataSource()
+
+        # 初始化数据库
         self._init_database()
-        
+
+    # ========== 数据库初始化 ==========
+
     def _init_database(self):
         """初始化数据库表结构"""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
-        
+
         # 股票基础信息表
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS stock_info (
@@ -53,7 +95,7 @@ class DataManager:
                 update_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
-        
+
         # 日线数据表
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS daily_kline (
@@ -72,7 +114,7 @@ class DataManager:
                 PRIMARY KEY (symbol, date)
             )
         ''')
-        
+
         # 分钟数据表
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS minute_kline (
@@ -87,7 +129,7 @@ class DataManager:
                 PRIMARY KEY (symbol, datetime)
             )
         ''')
-        
+
         # ========== 财务数据表（新版）==========
 
         # 1. 盈利能力数据（利润表）
@@ -233,6 +275,22 @@ class DataManager:
                 float_market_cap REAL,
                 total_shares REAL,
                 float_shares REAL,
+                update_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(symbol, trade_date)
+            )
+        ''')
+
+        # 8.1 历史估值数据（日频）
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS history_valuation_data (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                symbol TEXT NOT NULL,
+                trade_date TEXT NOT NULL,
+                close REAL,
+                pe_ttm REAL,
+                pb REAL,
+                ps REAL,
+                pcf REAL,
                 update_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(symbol, trade_date)
             )
@@ -462,142 +520,40 @@ class DataManager:
         conn.commit()
         conn.close()
 
-    def get_stock_list(self, market: str = "all") -> pd.DataFrame:
-        """
-        获取股票列表
-        
-        Args:
-            market: 市场类型 (sh/sz/all)
-            
-        Returns:
-            DataFrame包含股票代码、名称、行业等信息
-        """
-        try:
-            # 获取上海股票
-            if market in ["sh", "all"]:
-                sh_stocks = ak.stock_sh_a_spot_em()
-                sh_stocks['market'] = 'SH'
-            else:
-                sh_stocks = pd.DataFrame()
-                
-            # 获取深圳股票
-            if market in ["sz", "all"]:
-                sz_stocks = ak.stock_sz_a_spot_em()
-                sz_stocks['market'] = 'SZ'
-            else:
-                sz_stocks = pd.DataFrame()
-            
-            # 合并数据
-            all_stocks = pd.concat([sh_stocks, sz_stocks], ignore_index=True)
-            
-            # 标准化列名
-            all_stocks = all_stocks.rename(columns={
-                '代码': 'symbol',
-                '名称': 'name',
-                '最新价': 'price',
-                '涨跌幅': 'pct_change',
-                '涨跌额': 'change',
-                '成交量': 'volume',
-                '成交额': 'amount',
-                '振幅': 'amplitude',
-                '最高': 'high',
-                '最低': 'low',
-                '今开': 'open',
-                '昨收': 'pre_close',
-                '量比': 'volume_ratio',
-                '换手率': 'turnover',
-                '市盈率-动态': 'pe',
-                '市净率': 'pb',
-                '总市值': 'total_mv',
-                '流通市值': 'float_mv',
-                '涨速': 'rise_speed',
-                '5分钟涨跌': 'change_5min',
-                '60日涨跌幅': 'change_60d',
-                '年初至今涨跌幅': 'change_ytd'
-            })
-            
-            return all_stocks
-            
-        except Exception as e:
-            print(f"获取股票列表失败: {e}")
-            return pd.DataFrame()
-    
+    # ========== 子管理器访问 ==========
+
+    @property
+    def kline_manager(self) -> KlineManager:
+        """获取 K线管理器"""
+        return self._kline_mgr
+
+    @property
+    def factor_manager(self) -> FactorManager:
+        """获取因子管理器"""
+        return self._factor_mgr
+
+    # ========== K线数据代理方法（委托给 KlineManager）==========
+
     def get_daily_kline(self, symbol: str, start_date: str, end_date: str) -> pd.DataFrame:
         """
-        获取日线数据
-        
+        获取日线数据（带完整性检查和在线获取）
+
+        委托给 KlineManager.fetch_daily_kline() 处理完整的获取-检查-保存逻辑
+
         Args:
             symbol: 股票代码
             start_date: 开始日期 (YYYY-MM-DD)
             end_date: 结束日期 (YYYY-MM-DD)
-            
+
         Returns:
-            DataFrame包含OHLCV数据
+            DataFrame 包含 OHLCV 数据
         """
-        import traceback
-        try:
-            # 参数验证
-            if not symbol or not start_date or not end_date:
-                print(f"参数错误: symbol={symbol}, start_date={start_date}, end_date={end_date}")
-                return pd.DataFrame()
-            
-            # 确保日期格式正确
-            try:
-                start_dt = pd.to_datetime(start_date)
-                end_dt = pd.to_datetime(end_date)
-            except Exception as date_err:
-                print(f"日期格式错误: {date_err}")
-                return pd.DataFrame()
-            
-            print(f"正在获取 {symbol} 从 {start_date} 到 {end_date} 的数据...")
-            
-            # 尝试从数据库读取
-            df = self._get_kline_from_db(symbol, start_date, end_date)
+        # 委托给 KlineManager 处理完整的获取流程
+        return self._kline_mgr.fetch_daily_kline(symbol, start_date, end_date)
 
-            if df.empty or not self._check_data_complete(df, start_date, end_date):
-                print(f"从数据库未获取到完整数据，尝试从在线数据源获取...")
-
-                # 使用多数据源获取
-                df_online = self.data_source.get_daily_kline(symbol, start_date, end_date)
-
-                if not df_online.empty:
-                    # 保存到数据库
-                    try:
-                        self._save_kline_to_db(df_online)
-                    except Exception as db_err:
-                        print(f"保存到数据库失败: {db_err}")
-                    df = df_online
-                else:
-                    print(f"从所有数据源获取到空数据")
-                    # 【关键修复】在线源失败时，回退使用数据库中已有的数据
-                    if not df.empty:
-                        print(f"回退使用数据库中的 {len(df)} 条历史数据（可能不完整）")
-                        # df 保持为数据库读取的数据，继续返回
-                    else:
-                        df = pd.DataFrame()
-            else:
-                print(f"从数据库获取到 {len(df)} 条数据")
-
-            return df
-            
-        except Exception as e:
-            print(f"获取{symbol}日线数据失败: {e}")
-            print(f"错误详情: {traceback.format_exc()}")
-            return pd.DataFrame()
-    
     def get_minute_kline(self, symbol: str, period: str = "1") -> pd.DataFrame:
-        """
-        获取分钟线数据
-        
-        Args:
-            symbol: 股票代码
-            period: 分钟周期 (1/5/15/30/60)
-            
-        Returns:
-            DataFrame包含分钟OHLCV数据
-        """
+        """获取分钟线数据"""
         try:
-            # 尝试从akshare获取
             from data_sources import AkshareDataSource
             ak_source = AkshareDataSource()
             if ak_source.is_available:
@@ -607,7 +563,7 @@ class DataManager:
                     period=period,
                     adjust="qfq"
                 )
-                
+
                 df = df.rename(columns={
                     '时间': 'datetime',
                     '开盘': 'open',
@@ -618,182 +574,48 @@ class DataManager:
                     '成交额': 'amount'
                 })
                 df['symbol'] = symbol
-                
+
                 return df
         except Exception as e:
             print(f"获取{symbol}分钟数据失败: {e}")
             return pd.DataFrame()
-    
-    def get_financial_data(self, symbol: str) -> pd.DataFrame:
-        """
-        获取财务数据
-        
-        Args:
-            symbol: 股票代码
-            
-        Returns:
-            DataFrame包含财务报表数据
-        """
-        try:
-            # 获取主要财务指标
-            import akshare as ak
-            df = ak.stock_financial_analysis_indicator(symbol=symbol)
-            return df
-        except Exception as e:
-            print(f"获取{symbol}财务数据失败: {e}")
-            return pd.DataFrame()
-    
-    def get_index_list(self) -> pd.DataFrame:
-        """获取指数列表"""
-        try:
-            import akshare as ak
-            df = ak.index_stock_info()
-            return df
-        except Exception as e:
-            print(f"获取指数列表失败: {e}")
-            return pd.DataFrame()
-    
-    def get_index_kline(self, symbol: str, start_date: str, end_date: str) -> pd.DataFrame:
-        """
-        获取指数K线数据
-        
-        Args:
-            symbol: 指数代码
-            start_date: 开始日期
-            end_date: 结束日期
-        """
-        try:
-            import akshare as ak
-            df = ak.index_zh_a_hist(
-                symbol=symbol,
-                period="daily",
-                start_date=start_date.replace("-", ""),
-                end_date=end_date.replace("-", "")
-            )
-            
-            df = df.rename(columns={
-                '日期': 'date',
-                '开盘': 'open',
-                '收盘': 'close',
-                '最高': 'high',
-                '最低': 'low',
-                '成交量': 'volume',
-                '成交额': 'amount',
-                '振幅': 'amplitude',
-                '涨跌幅': 'pct_change',
-                '涨跌额': 'change',
-                '换手率': 'turnover'
-            })
-            
-            return df
-        except Exception as e:
-            print(f"获取指数{symbol}数据失败: {e}")
-            return pd.DataFrame()
-    
+
     def _get_kline_from_db(self, symbol: str, start_date: str, end_date: str) -> pd.DataFrame:
-        """从数据库读取K线数据"""
-        conn = sqlite3.connect(self.db_path)
-        query = """
-            SELECT * FROM daily_kline 
-            WHERE symbol = ? AND date BETWEEN ? AND ?
-            ORDER BY date
-        """
-        df = pd.read_sql_query(query, conn, params=(symbol, start_date, end_date))
-        conn.close()
-        return df
-    
+        """从数据库读取K线数据（内部方法）"""
+        return self._kline_mgr.get_daily_kline(symbol, start_date, end_date)
+
     def _save_kline_to_db(self, df: pd.DataFrame):
-        """保存K线数据到数据库"""
-        if df.empty:
-            return
+        """保存K线数据到数据库（内部方法）"""
+        return self._kline_mgr.save_daily_kline(df)
 
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
+    # ========== 数据更新方法 ==========
 
-        # 定义所有可能的列（与数据库表结构一致）
-        all_cols = ['symbol', 'date', 'open', 'high', 'low', 'close',
-                   'volume', 'amount', 'turnover', 'amplitude',
-                   'pct_change', 'change_amount']
-
-        # 只选择存在的列，并填充缺失的列为0
-        existing_cols = [col for col in all_cols if col in df.columns]
-        missing_cols = [col for col in all_cols if col not in df.columns]
-
-        save_df = df[existing_cols].copy()
-
-        # 填充缺失的列
-        for col in missing_cols:
-            save_df[col] = 0.0
-
-        # 确保列顺序一致
-        save_df = save_df[all_cols]
-
-        # 使用事务批量插入，先删除已存在的记录，再插入新数据
-        # 这样可以避免 INSERT OR REPLACE 可能带来的问题
-        try:
-            cursor.execute("BEGIN TRANSACTION")
-            for _, row in save_df.iterrows():
-                # 先删除已存在的记录（如果主键冲突）
-                cursor.execute("""
-                    DELETE FROM daily_kline WHERE symbol = ? AND date = ?
-                """, (row['symbol'], row['date']))
-
-                # 插入新记录
-                cursor.execute("""
-                    INSERT INTO daily_kline
-                    (symbol, date, open, high, low, close, volume, amount, turnover, amplitude, pct_change, change_amount)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    row['symbol'], row['date'], row['open'], row['high'], row['low'],
-                    row['close'], row['volume'], row['amount'], row.get('turnover', 0),
-                    row.get('amplitude', 0), row.get('pct_change', 0), row.get('change_amount', 0)
-                ))
-            cursor.execute("COMMIT")
-        except Exception as e:
-            cursor.execute("ROLLBACK")
-            print(f"保存数据失败: {e}")
-        finally:
-            conn.close()
-    
     def update_recent_data(self, symbols: list, days: int = 10):
         """
-        更新指定股票列表的最近N天数据（不包括今天）
+        更新指定股票列表的最近N天数据
 
-        专门用于刷新自选股的最新行情数据。
-        逻辑：先检查数据库，如果数据库中已有最近days天的完整数据，则跳过；
-        否则从在线数据源获取缺少的数据。
-
-        Args:
-            symbols: 股票代码列表
-            days: 获取最近多少天的数据（默认10天，确保覆盖5个交易日）
-
-        Returns:
-            updated_count: 实际从在线源更新了数据的股票数量
+        委托逻辑：
+        1. 使用 CachePolicy 检查数据完整性
+        2. 不完整时从在线源获取
+        3. 保存到数据库
         """
-        # 计算日期范围：今天之前的days天（不包括今天）
-        # 交易日数量约为日历天的40%，所以取 days*3 作为搜索范围以确保覆盖足够的交易日
         end_date = datetime.now().strftime("%Y-%m-%d")
         start_date = (datetime.now() - timedelta(days=days*3)).strftime("%Y-%m-%d")
 
         updated_count = 0
         for symbol in symbols:
             try:
-                # 先检查数据库中最近days天的数据是否完整
-                existing_df = self._get_kline_from_db(symbol, start_date, end_date)
+                existing_df = self._kline_mgr.get_daily_kline(symbol, start_date, end_date)
 
-                # 使用 _check_data_complete 检查数据完整性和时效性
-                if self._check_data_complete(existing_df, start_date, end_date):
-                    # 数据库中已有足够且足够新的数据，跳过更新
+                if CachePolicy.check_data_complete(existing_df, start_date, end_date):
                     latest_date = existing_df['date'].max() if not existing_df.empty else "无"
                     print(f"  {symbol} 数据库已有最新数据 ({len(existing_df)} 条，最新: {latest_date})，跳过更新")
                     continue
 
-                # 数据不完整或过时，从在线数据源获取
                 print(f"  {symbol} 数据库数据不完整 ({len(existing_df)} 条)，从在线源获取...")
-                df = self.data_source.get_daily_kline(symbol, start_date, end_date)
+                df = self._data_source.get_daily_kline(symbol, start_date, end_date)
                 if not df.empty:
-                    # 增量保存到数据库
-                    self._save_kline_to_db(df)
+                    self._kline_mgr.save_daily_kline(df)
                     updated_count += 1
                     print(f"  已更新 {symbol} 最新数据 ({len(df)} 条)")
                 else:
@@ -804,112 +626,115 @@ class DataManager:
         print(f"数据更新完成: {updated_count}/{len(symbols)} 只股票从在线源更新")
         return updated_count
 
-    def _check_data_complete(self, df: pd.DataFrame, start_date: str, end_date: str) -> bool:
-        """检查数据是否完整
-
-        完整性的判断标准：
-        1. 数据条数足够（>= 估算交易日 * 85%）
-        2. 最新数据日期足够新（>= 昨天）
-
-        只有同时满足两者，才认为数据完整。
-        """
-        if df.empty:
-            return False
-
-        # 更严格的检查：数据条数应该接近交易日数量
-        # 交易日数量 = 工作日数量（粗略估算为日历天的1/5，但更准确的是直接计算）
-        start = datetime.strptime(start_date, "%Y-%m-%d")
-        end = datetime.strptime(end_date, "%Y-%m-%d")
-        total_days = (end - start).days
-
-        if total_days <= 0:
-            return True
-
-        # 粗略估算交易日数量（约为日历天的40%，因为扣除周末和假期）
-        estimated_trading_days = int(total_days * 0.4)
-
-        # 检查1：数据条数是否足够
-        if len(df) < estimated_trading_days * 0.85:
-            return False
-
-        # 检查2：最新数据日期是否包含 end_date
-        # 关键逻辑：
-        # - 如果 end_date 是历史日期（过去），用 end_date 作为参考
-        # - 如果 end_date 是今天或未来，用当前日期逻辑（考虑周末）
-        today = datetime.now()
-        end_dt = datetime.strptime(end_date, "%Y-%m-%d")
-
-        if end_dt.date() < today.date():
-            # 回测历史区间：用 end_date 作为参考
-            ref_date = end_dt.date()
-        else:
-            # 实时/未来区间：考虑周末
-            # - 周一(0)：最近交易日是上周五（3天前）
-            # - 周日(6)：最近交易日是上周五（2天前）
-            # - 其他工作日：最近交易日是昨天（1天前）
-            weekday = today.weekday()
-
-            if weekday == 0:  # 周一
-                days_back = 3  # 上周五
-            elif weekday == 6:  # 周日
-                days_back = 2  # 上周五
-            else:  # 周二~周六
-                days_back = 1  # 昨天
-
-            ref_date = (today - timedelta(days=days_back)).date()
-
-        latest_date = pd.to_datetime(df['date']).max().date()
-
-        if latest_date < ref_date:
-            # 数据过时，不完整
-            return False
-
-        return True
-    
     def update_all_data(self):
         """更新所有数据"""
         print("开始更新数据...")
-        
-        # 更新股票列表
+
         print("更新股票列表...")
         stocks = self.get_stock_list()
-        
-        # 更新指数数据
+
         print("更新指数数据...")
         end_date = datetime.now().strftime("%Y-%m-%d")
         start_date = (datetime.now() - timedelta(days=365)).strftime("%Y-%m-%d")
-        
-        # 主要指数
+
         indices = ['000001', '000300', '000905', '399001', '399006']
         for idx in indices:
             self.get_index_kline(idx, start_date, end_date)
-        
+
         print("数据更新完成")
 
-    # ========== 财务数据便捷方法 ==========
+    # ========== 其他数据获取方法（保留原有实现）==========
+
+    def get_stock_list(self, market: str = "all") -> pd.DataFrame:
+        """获取股票列表"""
+        try:
+            if market in ["sh", "all"]:
+                import akshare as ak
+                sh_stocks = ak.stock_sh_a_spot_em()
+                sh_stocks['market'] = 'SH'
+            else:
+                sh_stocks = pd.DataFrame()
+
+            if market in ["sz", "all"]:
+                import akshare as ak
+                sz_stocks = ak.stock_sz_a_spot_em()
+                sz_stocks['market'] = 'SZ'
+            else:
+                sz_stocks = pd.DataFrame()
+
+            all_stocks = pd.concat([sh_stocks, sz_stocks], ignore_index=True)
+
+            all_stocks = all_stocks.rename(columns={
+                '代码': 'symbol', '名称': 'name', '最新价': 'price',
+                '涨跌幅': 'pct_change', '涨跌额': 'change', '成交量': 'volume',
+                '成交额': 'amount', '振幅': 'amplitude', '最高': 'high',
+                '最低': 'low', '今开': 'open', '昨收': 'pre_close',
+                '量比': 'volume_ratio', '换手率': 'turnover',
+                '市盈率-动态': 'pe', '市净率': 'pb',
+                '总市值': 'total_mv', '流通市值': 'float_mv',
+                '涨速': 'rise_speed', '5分钟涨跌': 'change_5min',
+                '60日涨跌幅': 'change_60d', '年初至今涨跌幅': 'change_ytd'
+            })
+
+            return all_stocks
+
+        except Exception as e:
+            print(f"获取股票列表失败: {e}")
+            return pd.DataFrame()
+
+    def get_financial_data(self, symbol: str) -> pd.DataFrame:
+        """获取财务数据"""
+        try:
+            import akshare as ak
+            df = ak.stock_financial_analysis_indicator(symbol=symbol)
+            return df
+        except Exception as e:
+            print(f"获取{symbol}财务数据失败: {e}")
+            return pd.DataFrame()
+
+    def get_index_list(self) -> pd.DataFrame:
+        """获取指数列表"""
+        try:
+            import akshare as ak
+            df = ak.index_stock_info()
+            return df
+        except Exception as e:
+            print(f"获取指数列表失败: {e}")
+            return pd.DataFrame()
+
+    def get_index_kline(self, symbol: str, start_date: str, end_date: str) -> pd.DataFrame:
+        """获取指数K线数据"""
+        try:
+            import akshare as ak
+            df = ak.index_zh_a_hist(
+                symbol=symbol,
+                period="daily",
+                start_date=start_date.replace("-", ""),
+                end_date=end_date.replace("-", "")
+            )
+
+            df = df.rename(columns={
+                '日期': 'date', '开盘': 'open', '收盘': 'close',
+                '最高': 'high', '最低': 'low', '成交量': 'volume',
+                '成交额': 'amount', '振幅': 'amplitude',
+                '涨跌幅': 'pct_change', '涨跌额': 'change', '换手率': 'turnover'
+            })
+
+            return df
+        except Exception as e:
+            print(f"获取指数{symbol}数据失败: {e}")
+            return pd.DataFrame()
+
+    # ========== 财务数据便捷方法（委托给 FinancialDataManager）==========
 
     def get_financial_manager(self):
-        """
-        获取财务数据管理器
-
-        Returns:
-            FinancialDataManager 实例
-        """
+        """获取财务数据管理器"""
         from .financial_data_manager import FinancialDataManager
         return FinancialDataManager(self.db_path)
 
     def update_financial_data(self, symbol: str,
                              data_types: List[str] = None) -> Dict[str, int]:
-        """
-        更新财务数据（便捷方法）
-
-        Args:
-            symbol: 股票代码，如 '000001.SZ'
-            data_types: 数据类型列表，如 ['profit', 'balance', 'cash', 'dupont']
-
-        Returns:
-            更新记录数
-        """
+        """更新财务数据（便捷方法）"""
         fdm = self.get_financial_manager()
         result = fdm.update_single_stock(symbol, data_types)
         fdm.close()
@@ -918,17 +743,7 @@ class DataManager:
     def get_financial_data(self, symbol: str,
                           data_type: str = 'profit',
                           start_date: str = None) -> pd.DataFrame:
-        """
-        获取财务数据（便捷方法）
-
-        Args:
-            symbol: 股票代码
-            data_type: 数据类型 ('profit'/'balance'/'cash'/'dupont'/'growth'/'operation'/'debtpaying')
-            start_date: 起始日期
-
-        Returns:
-            DataFrame
-        """
+        """获取财务数据（便捷方法）"""
         fdm = self.get_financial_manager()
         df = fdm.get_financial_data(symbol, data_type, start_date)
         fdm.close()
@@ -936,16 +751,7 @@ class DataManager:
 
     def get_valuation(self, symbol: str,
                       trade_date: str = None) -> Optional[Dict]:
-        """
-        获取估值数据（便捷方法）
-
-        Args:
-            symbol: 股票代码
-            trade_date: 交易日期，默认最新
-
-        Returns:
-            Dict or None
-        """
+        """获取估值数据（便捷方法）"""
         fdm = self.get_financial_manager()
         val = fdm.get_valuation(symbol, trade_date)
         fdm.close()
@@ -967,17 +773,35 @@ class DataManager:
         """获取杜邦分析数据"""
         return self.get_financial_data(symbol, 'dupont', start_date)
 
+    # ========== IC分析便捷方法（委托给 FactorManager）==========
+
+    def get_ic_statistics(self, factor_name: str = None) -> pd.DataFrame:
+        """获取 IC 统计信息"""
+        return self._factor_mgr.get_ic_statistics(factor_name)
+
+    def get_ic_series(self, factor_name: str, start_date: str = None, end_date: str = None) -> pd.DataFrame:
+        """获取 IC 时间序列"""
+        return self._factor_mgr.get_ic_series(factor_name, start_date, end_date)
+
+    def save_ic_result(self, factor_name: str, trade_date: str, ic_value: float, **kwargs) -> bool:
+        """保存 IC 分析结果"""
+        return self._factor_mgr.save_ic_result(factor_name, trade_date, ic_value, **kwargs)
+
 
 if __name__ == "__main__":
     # 测试数据管理器
     dm = DataManager()
-    
+
     # 获取股票列表
     stocks = dm.get_stock_list()
     print(f"获取到 {len(stocks)} 只股票")
     print(stocks.head())
-    
+
     # 获取日线数据
     df = dm.get_daily_kline("000001", "2024-01-01", "2024-12-31")
     print(f"\n获取到 {len(df)} 条日线数据")
     print(df.head())
+
+    # 测试子管理器
+    print(f"\nK线管理器: {dm.kline_manager}")
+    print(f"因子管理器: {dm.factor_manager}")
