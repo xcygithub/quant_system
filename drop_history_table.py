@@ -1,6 +1,7 @@
 import sqlite3
+from config import DATABASE_PATH
 
-db_path = 'C:/Users/FY/WorkBuddy/Claw/quant_data.db'
+db_path = str(DATABASE_PATH)
 conn = sqlite3.connect(db_path)
 cursor = conn.cursor()
 

@@ -9,38 +9,24 @@ import time
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 
-# 导入后端模块
-# 注意：app.py 中的 project_root 是 Claw 目录 (Path(__file__).parent.parent.parent)
-# 所以需要添加 Claw 到 sys.path，然后通过 quant_system.xxx 导入
-try:
-    from quant_system.data.data_manager import DataManager
-    from quant_system.data.financial_data_source import FinancialDataSource
-    from quant_system.data.financial_data_manager import FinancialDataManager
-    from quant_system.data.financial_data_saver import FinancialDataSaver
-    from quant_system.portfolio.watchlist import WatchlistManager
-except ImportError:
-    import sys
-    from pathlib import Path
-    # 当作为独立页面或独立运行时，需要添加项目根目录到路径
-    # pages/data_management.py -> web/pages -> quant_system -> Claw
-    project_root = Path(__file__).parent.parent.parent  # = Claw 目录
-    sys.path.insert(0, str(project_root))
-    from quant_system.data.data_manager import DataManager
-    from quant_system.data.financial_data_source import FinancialDataSource
-    from quant_system.data.financial_data_manager import FinancialDataManager
-    from quant_system.data.financial_data_saver import FinancialDataSaver
-    from quant_system.portfolio.watchlist import WatchlistManager
+from data.data_manager import DataManager
+from data.financial_data_source import FinancialDataSource
+from data.financial_data_manager import FinancialDataManager
+from data.financial_data_saver import FinancialDataSaver
+from portfolio.watchlist import WatchlistManager
 
 
 # =============================================================================
 # 页面配置
 # =============================================================================
 
-st.set_page_config(
-    page_title="财务数据管理",
-    page_icon="📥",
-    layout="wide"
-)
+def configure_page():
+    """独立运行该页面时使用的页面配置。"""
+    st.set_page_config(
+        page_title="财务数据管理",
+        page_icon="📥",
+        layout="wide"
+    )
 
 
 # =============================================================================
@@ -537,4 +523,5 @@ def render_data_management_page():
 # =============================================================================
 
 if __name__ == "__main__":
+    configure_page()
     render_data_management_page()

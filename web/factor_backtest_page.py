@@ -11,17 +11,11 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any
 
 # 导入后端模块
-try:
-    from quant_system.portfolio.multi_factor_backtest import MultiFactorBacktest, run_multi_factor_backtest
-    from quant_system.portfolio.factor_ic_configurator import FactorICConfigurator
-    from quant_system.portfolio.factor_signal_generator import FactorSignalGenerator
-    from quant_system.data.data_manager import DataManager
-    from quant_system.data.data_provider import CacheOnlyProvider
-except ImportError:
-    from ..portfolio.multi_factor_backtest import MultiFactorBacktest, run_multi_factor_backtest
-    from ..portfolio.factor_ic_configurator import FactorICConfigurator
-    from ..portfolio.factor_signal_generator import FactorSignalGenerator
-    from ..data.data_manager import DataManager
+from portfolio.multi_factor_backtest import MultiFactorBacktest, run_multi_factor_backtest
+from portfolio.factor_ic_configurator import FactorICConfigurator
+from portfolio.factor_signal_generator import FactorSignalGenerator
+from data.data_manager import DataManager
+from data.data_provider import CacheOnlyProvider
 
 
 # =============================================================================

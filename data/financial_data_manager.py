@@ -13,6 +13,7 @@ warnings.filterwarnings('ignore')
 
 from .financial_data_source import FinancialDataSource
 from .financial_data_saver import FinancialDataSaver
+from config import DATABASE_PATH
 
 
 class FinancialDataManager:
@@ -28,12 +29,11 @@ class FinancialDataManager:
         初始化财务数据管理器
 
         Args:
-            db_path: SQLite数据库路径，默认使用 Claw 目录下的 quant_data.db
+            db_path: SQLite数据库路径，默认使用项目根目录下的 quant_data.db
         """
         if db_path is None:
-            from pathlib import Path
-            # 与 DataManager 保持一致，使用 Claw 目录下的数据库
-            db_path = Path(__file__).parent.parent.parent / "quant_data.db"
+            # 与 DataManager 保持一致，统一使用全局配置
+            db_path = DATABASE_PATH
 
         self.db_path = str(db_path)
         self.source = FinancialDataSource(db_path)

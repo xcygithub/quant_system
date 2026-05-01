@@ -323,7 +323,7 @@ streamlit run web/app.py
 ### 6.1 代码调用
 
 ```python
-from quant_system.main import QuantSystem
+from main import QuantSystem
 
 # 初始化
 system = QuantSystem({
@@ -378,7 +378,7 @@ optimization = system.optimize_parameters(
 | **Akshare** | 补充数据源 | 直接使用 |
 | **CSV** | 本地数据文件 | - |
 
-**数据库路径**：`C:\Users\FY\WorkBuddy\Claw\quant_data.db`
+**数据库路径（默认）**：`quant_system/quant_data.db`
 
 ### 6.4 数据库表一览
 

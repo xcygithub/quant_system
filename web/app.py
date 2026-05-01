@@ -7,27 +7,21 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-import sys
-from pathlib import Path
 from datetime import datetime, timedelta
 
-# 添加项目根目录到路径
-project_root = Path(__file__).parent.parent.parent
-sys.path.insert(0, str(project_root))
-
-from quant_system.data.data_manager import DataManager
-from quant_system.data.data_provider import CacheOnlyProvider
-from quant_system.data.factor_data import FactorData
-from quant_system.backtest.performance import PerformanceAnalyzer
-from quant_system.strategy.moving_average import MovingAverageCrossStrategy, MACDStrategy, BollingerBandsStrategy
-from quant_system.strategy.multi_factor import MultiFactorStrategy, RSIStrategy
-from quant_system.portfolio.watchlist import WatchlistManager
-from quant_system.portfolio.multi_stock_backtest import MultiStockBacktest
-from quant_system.portfolio.multi_factor_backtest import run_multi_factor_backtest
-from quant_system.portfolio.signal_scanner import SignalScanner, ScanResult, ScanSignal
-from quant_system.web.factor_backtest_page import render_factor_backtest_page, FACTOR_CATEGORIES, DEFAULT_FACTORS
-from quant_system.web.factor_analysis_page import render_factor_analysis_page
-from quant_system.web.pages.data_management import render_data_management_page
+from data.data_manager import DataManager
+from data.data_provider import CacheOnlyProvider
+from data.factor_data import FactorData
+from backtest.performance import PerformanceAnalyzer
+from strategy.moving_average import MovingAverageCrossStrategy, MACDStrategy, BollingerBandsStrategy
+from strategy.multi_factor import MultiFactorStrategy, RSIStrategy
+from portfolio.watchlist import WatchlistManager
+from portfolio.multi_stock_backtest import MultiStockBacktest
+from portfolio.multi_factor_backtest import run_multi_factor_backtest
+from portfolio.signal_scanner import SignalScanner, ScanResult, ScanSignal
+from web.factor_backtest_page import render_factor_backtest_page, FACTOR_CATEGORIES, DEFAULT_FACTORS
+from web.factor_analysis_page import render_factor_analysis_page
+from web.pages.data_management import render_data_management_page
 
 # 页面配置
 st.set_page_config(

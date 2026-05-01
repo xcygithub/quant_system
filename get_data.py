@@ -1,11 +1,10 @@
 import sqlite3
 import pandas as pd
-from pathlib import Path
+from config import DATABASE_PATH
 
 # ====================== 配置 ======================
-# 统一使用 Claw 目录下的数据库（与 data_manager.py 保持一致）
-PROJECT_ROOT = Path(__file__).parent.parent
-DB_PATH = PROJECT_ROOT / "quant_data.db"
+# 统一使用全局配置中的数据库路径
+DB_PATH = DATABASE_PATH
 
 
 # ====================== 通用查询函数 ======================

@@ -7,14 +7,8 @@ import numpy as np
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 import sqlite3
-import sys
-from pathlib import Path
 
-# 添加项目根目录到路径
-project_root = Path(__file__).parent.parent.parent
-sys.path.insert(0, str(project_root))
-
-from quant_system.strategy.fundamental_factors import FundamentalFactors
+from strategy.fundamental_factors import FundamentalFactors
 
 
 class FactorPresenter:

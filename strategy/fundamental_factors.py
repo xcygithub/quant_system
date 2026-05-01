@@ -72,7 +72,7 @@ class FundamentalFactors:
         初始化基本面因子计算器
 
         Args:
-            db_path: 数据库路径，默认使用 Claw 目录下的 quant_data.db
+            db_path: 数据库路径，默认使用项目根目录下的 quant_data.db
         """
         self.fdm = FinancialDataManager(db_path)
 

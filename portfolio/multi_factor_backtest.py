@@ -16,6 +16,7 @@ from .multi_stock_backtest import (
 from .factor_signal_generator import FactorSignalGenerator, create_signal_generator
 from .factor_exposure_tracker import FactorExposureTracker
 from .factor_ic_configurator import FactorICConfigurator
+from config import DATABASE_PATH
 
 
 @dataclass
@@ -94,7 +95,7 @@ class MultiFactorBacktest(MultiStockBacktest):
         self.factor_names = factor_names or list(factor_weights.keys()) if factor_weights else []
         self.use_ic_weighting = use_ic_weighting
         self.ic_update_freq = ic_update_freq
-        self.db_path = db_path or 'C:/Users/FY/WorkBuddy/Claw/quant_data.db'
+        self.db_path = db_path or str(DATABASE_PATH)
 
         # IC 配置器
         self.ic_configurator = FactorICConfigurator(db_path=self.db_path)

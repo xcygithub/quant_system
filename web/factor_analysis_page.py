@@ -9,17 +9,11 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
-import sys
-from pathlib import Path
 
-# 添加项目根目录到路径
-project_root = Path(__file__).parent.parent.parent
-sys.path.insert(0, str(project_root))
-
-from quant_system.strategy.fundamental_factors import FundamentalFactors
-from quant_system.portfolio.watchlist import WatchlistManager
-from quant_system.data.data_manager import DataManager
-from quant_system.web.factor_presenter import FactorPresenter
+from strategy.fundamental_factors import FundamentalFactors
+from portfolio.watchlist import WatchlistManager
+from data.data_manager import DataManager
+from web.factor_presenter import FactorPresenter
 
 
 # =============================================================================
@@ -253,6 +247,22 @@ def _render_single_stock_view(dm: DataManager, wl_manager: WatchlistManager):
 
     # 获取因子类别
     factor_categories = fp.get_factor_list_by_category()
+
+    # 兜底：当元数据表为空或读取失败时，使用内置因子定义，避免 st.tabs([]) 报错
+    if not factor_categories:
+        fallback_categories = {}
+        for factor_name, meta in FundamentalFactors.FACTOR_METADATA.items():
+            category_en = meta.get('category', '')
+            category_cn = fp.FACTOR_CATEGORIES.get(category_en, '其他')
+            fallback_categories.setdefault(category_cn, []).append((
+                factor_name,
+                fp.FACTOR_NAMES_CN.get(factor_name, factor_name)
+            ))
+        factor_categories = fallback_categories
+
+    if not factor_categories:
+        st.warning("暂无可展示的因子分类，请先检查因子元数据初始化。")
+        return
 
     # 创建因子选择UI
     tabs = st.tabs(list(factor_categories.keys()))

@@ -9,6 +9,7 @@ from typing import Dict, List, Optional
 import sqlite3
 import warnings
 warnings.filterwarnings('ignore')
+from config import DATABASE_PATH
 
 
 class FinancialDataSaver:
@@ -23,12 +24,11 @@ class FinancialDataSaver:
         初始化财务数据持久化器
 
         Args:
-            db_path: SQLite数据库路径，默认使用 Claw 目录下的 quant_data.db
+            db_path: SQLite数据库路径，默认使用项目根目录下的 quant_data.db
         """
         if db_path is None:
-            from pathlib import Path
-            # 与 DataManager 保持一致，使用 Claw 目录下的数据库
-            db_path = Path(__file__).parent.parent.parent / "quant_data.db"
+            # 与 DataManager 保持一致，统一使用全局配置
+            db_path = DATABASE_PATH
         self.db_path = str(db_path)
 
     def _get_connection(self) -> sqlite3.Connection:
@@ -611,10 +611,7 @@ class FinancialDataSaver:
 
 if __name__ == "__main__":
     # 测试数据保存
-    from pathlib import Path
-
-    db_path = Path(__file__).parent.parent / "quant_data.db"
-    saver = FinancialDataSaver(str(db_path))
+    saver = FinancialDataSaver(str(DATABASE_PATH))
 
     print(f"数据库路径: {saver.db_path}")
     print("FinancialDataSaver 初始化成功")
