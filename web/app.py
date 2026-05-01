@@ -35,40 +35,310 @@ st.set_page_config(
     initial_sidebar_state="collapsed"  # 默认收起侧边栏
 )
 
-# 自定义样式
+# 自定义样式（产品化视觉）
 st.markdown("""
 <style>
-    .main-header {
-        font-size: 2.5rem;
-        font-weight: bold;
-        color: #1f77b4;
-        text-align: center;
-        margin-bottom: 2rem;
+    :root {
+        --primary-50: #eff6ff;
+        --primary-500: #2563eb;
+        --primary-600: #1d4ed8;
+        --slate-100: #f1f5f9;
+        --slate-200: #e2e8f0;
+        --slate-300: #cbd5e1;
+        --slate-500: #64748b;
+        --slate-700: #334155;
+        --slate-800: #1e293b;
+        --success: #16a34a;
+        --danger: #dc2626;
     }
+
+    .stApp {
+        background:
+            radial-gradient(circle at 20% -20%, #dbeafe 0%, rgba(219, 234, 254, 0) 40%),
+            radial-gradient(circle at 85% -25%, #e0e7ff 0%, rgba(224, 231, 255, 0) 35%),
+            #f8fafc;
+    }
+
+    .block-container {
+        padding-top: 1.5rem !important;
+        padding-bottom: 2rem !important;
+    }
+
+    .app-hero {
+        border: 1px solid #dbe4ff;
+        background: linear-gradient(135deg, #1e3a8a 0%, #1d4ed8 55%, #2563eb 100%);
+        color: #ffffff;
+        border-radius: 16px;
+        padding: 20px 24px;
+        margin-bottom: 18px;
+        box-shadow: 0 10px 24px rgba(37, 99, 235, 0.18);
+    }
+
+    .app-hero .title {
+        font-size: 1.9rem;
+        font-weight: 800;
+        line-height: 1.2;
+        margin-bottom: 6px;
+    }
+
+    .app-hero .subtitle {
+        font-size: 0.96rem;
+        color: #dbeafe;
+    }
+
+    .hero-badges {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 14px;
+    }
+
+    .hero-badge {
+        background: rgba(255, 255, 255, 0.14);
+        border: 1px solid rgba(255, 255, 255, 0.25);
+        border-radius: 999px;
+        padding: 4px 10px;
+        font-size: 0.8rem;
+        color: #eff6ff;
+    }
+
+    .section-title {
+        margin: 4px 0 14px;
+        padding: 10px 14px;
+        border-left: 4px solid var(--primary-500);
+        border-radius: 8px;
+        background: linear-gradient(90deg, #eff6ff 0%, #f8fafc 100%);
+    }
+
+    .section-title .main {
+        font-size: 1.1rem;
+        font-weight: 700;
+        color: #0f172a;
+        margin-bottom: 2px;
+    }
+
+    .section-title .desc {
+        font-size: 0.86rem;
+        color: var(--slate-500);
+    }
+
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 8px;
+        padding: 8px;
+        border-radius: 12px;
+        background: #eef2ff;
+        border: 1px solid #dbe4ff;
+        margin-bottom: 16px;
+    }
+
+    .stTabs [data-baseweb="tab"] {
+        border-radius: 9px;
+        color: var(--slate-700);
+        font-weight: 600;
+        padding: 10px 16px;
+    }
+
+    .stTabs [aria-selected="true"] {
+        background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%) !important;
+        color: white !important;
+        box-shadow: 0 6px 14px rgba(37, 99, 235, 0.25);
+    }
+
     .stock-card {
-        background-color: #f8f9fa;
+        background: #ffffff;
         padding: 1rem;
-        border-radius: 0.5rem;
+        border-radius: 12px;
         margin: 0.5rem 0;
-        border-left: 4px solid #1f77b4;
+        border: 1px solid var(--slate-200);
+        box-shadow: 0 4px 12px rgba(15, 23, 42, 0.05);
+        transition: all 0.2s ease;
     }
+
     .stock-card:hover {
-        background-color: #e9ecef;
+        transform: translateY(-2px);
+        border-color: #bfdbfe;
+        box-shadow: 0 10px 20px rgba(30, 58, 138, 0.1);
         cursor: pointer;
     }
+
+    .watchlist-overview {
+        display: flex;
+        gap: 8px;
+        margin: 8px 0 12px;
+    }
+
+    .watchlist-overview .item {
+        flex: 1;
+        border-radius: 10px;
+        border: 1px solid var(--slate-200);
+        background: #ffffff;
+        padding: 8px 10px;
+        text-align: center;
+    }
+
+    .watchlist-overview .label {
+        font-size: 0.76rem;
+        color: var(--slate-500);
+        margin-bottom: 2px;
+    }
+
+    .watchlist-overview .value {
+        font-size: 1.05rem;
+        font-weight: 700;
+    }
+
+    .watchlist-symbol {
+        font-size: 1.45rem;
+        font-weight: 700;
+        color: #0f172a;
+    }
+
+    .watchlist-name {
+        font-size: 1rem;
+        color: #64748b;
+        margin-left: 6px;
+    }
+
+    .watchlist-group {
+        display: inline-block;
+        margin-top: 6px;
+        padding: 2px 8px;
+        border-radius: 999px;
+        background: #f1f5f9;
+        color: #334155;
+        font-size: 0.74rem;
+        border: 1px solid #e2e8f0;
+    }
+
+    .watchlist-price {
+        text-align: right;
+    }
+
+    .watchlist-price .px {
+        font-size: 1.55rem;
+        font-weight: 800;
+        line-height: 1.1;
+        color: #0f172a;
+        white-space: nowrap;
+    }
+
+    .watchlist-price .chg {
+        font-size: 1.02rem;
+        font-weight: 700;
+        margin-top: 3px;
+        white-space: nowrap;
+    }
+
+    .watchlist-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 10px;
+    }
+
+    .watchlist-left {
+        min-width: 0;
+    }
+
+    .watchlist-right {
+        text-align: right;
+        min-width: 96px;
+    }
+
+    div[data-testid="stMetric"] {
+        background: #ffffff;
+        border: 1px solid var(--slate-200);
+        border-radius: 12px;
+        padding: 8px 14px;
+        box-shadow: 0 2px 8px rgba(15, 23, 42, 0.05);
+    }
+
+    div[data-testid="stDataFrame"] {
+        border: 1px solid var(--slate-200);
+        border-radius: 12px;
+        overflow: hidden;
+    }
+
+    .stButton > button {
+        border-radius: 10px;
+        border: 1px solid var(--slate-300);
+    }
+
+    .stButton > button[kind="primary"] {
+        border: none;
+        background: linear-gradient(135deg, var(--primary-600) 0%, var(--primary-500) 100%);
+        color: white;
+        box-shadow: 0 6px 14px rgba(37, 99, 235, 0.3);
+    }
+
     .positive {
-        color: #dc3545 !important;  /* A股红色表示涨 */
+        color: var(--danger) !important;  /* A股红色表示涨 */
     }
+
     .negative {
-        color: #28a745 !important;  /* A股绿色表示跌 */
+        color: var(--success) !important;  /* A股绿色表示跌 */
     }
+
     .metric-value {
-        font-size: 1.5rem;
-        font-weight: bold;
+        font-size: 1.45rem;
+        font-weight: 700;
     }
+
     .metric-label {
-        font-size: 0.875rem;
-        color: #6c757d;
+        font-size: 0.82rem;
+        color: #64748b;
+        margin-bottom: 2px;
+    }
+
+    .market-page-title {
+        border: 1px solid #dbe4ff;
+        border-radius: 14px;
+        background: linear-gradient(135deg, #0f172a 0%, #1e3a8a 75%);
+        color: #e2e8f0;
+        padding: 14px 16px;
+        margin: 2px 0 14px;
+        box-shadow: 0 8px 18px rgba(15, 23, 42, 0.2);
+    }
+
+    .market-page-title .main {
+        font-size: 1.18rem;
+        font-weight: 800;
+        color: #f8fafc;
+        margin-bottom: 4px;
+    }
+
+    .market-page-title .sub {
+        font-size: 0.86rem;
+        color: #bfdbfe;
+    }
+
+    .market-toolbar {
+        border: 1px solid #e2e8f0;
+        border-radius: 12px;
+        background: #ffffff;
+        padding: 10px 12px;
+        margin: 8px 0 12px;
+        box-shadow: 0 2px 8px rgba(15, 23, 42, 0.04);
+    }
+
+    .market-toolbar .label {
+        color: #64748b;
+        font-size: 0.78rem;
+        letter-spacing: 0.02em;
+        text-transform: uppercase;
+        margin-bottom: 3px;
+    }
+
+    .market-toolbar .value {
+        color: #0f172a;
+        font-size: 0.95rem;
+        font-weight: 700;
+    }
+
+    .table-caption {
+        color: #64748b;
+        font-size: 0.8rem;
+        margin-top: 6px;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -90,8 +360,45 @@ def get_watchlist_manager():
 
 wl_manager = get_watchlist_manager()
 
+# 通用标题组件
+def render_section_title(title, icon="📌", desc=""):
+    subtitle = f'<div class="desc">{desc}</div>' if desc else ""
+    st.markdown(
+        f"""
+        <div class="section-title">
+            <div class="main">{icon} {title}</div>
+            {subtitle}
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+
+# 顶部产品头部
+def render_app_hero():
+    stocks = wl_manager.get_all_stocks()
+    groups = sorted({s.group for s in stocks}) if stocks else []
+    now_text = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    st.markdown(
+        f"""
+        <div class="app-hero">
+            <div class="title">量化交易系统 · 专业版工作台</div>
+            <div class="subtitle">聚合行情、策略回测、因子研究与数据管理，构建一站式股票研究流程</div>
+            <div class="hero-badges">
+                <span class="hero-badge">自选股 {len(stocks)} 只</span>
+                <span class="hero-badge">分组 {len(groups)} 个</span>
+                <span class="hero-badge">环境 Streamlit</span>
+                <span class="hero-badge">更新时间 {now_text}</span>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+
 # 主页面
-st.markdown('<h1 class="main-header">📈 量化交易系统</h1>', unsafe_allow_html=True)
+render_app_hero()
 
 # 创建标签页
 # 7个标签页：自选股管理、策略回测、多因子回测、信号扫描、绩效分析、因子分析、财务数据管理
@@ -257,13 +564,23 @@ def plot_kline(df, symbol, period='D'):
         ma_periods = [3, 5]
         ma_labels = ['MA3', 'MA5']
 
+    ma_color_map = {
+        'MA3': '#6366f1',
+        'MA5': '#2563eb',
+        'MA6': '#0ea5e9',
+        'MA10': '#ef4444',
+        'MA12': '#f59e0b',
+        'MA20': '#10b981',
+        'MA60': '#14b8a6'
+    }
+
     for ma_period, ma_label in zip(ma_periods, ma_labels):
         if len(df) >= ma_period:
             df[f'ma{ma_period}'] = df['close'].rolling(ma_period).mean()
             fig.add_trace(go.Scatter(
                 x=df['date'], y=df[f'ma{ma_period}'],
                 name=ma_label,
-                line=dict(width=1.5)
+                line=dict(width=1.6, color=ma_color_map.get(ma_label, '#64748b'))
             ), row=1, col=1)
 
     # 成交量柱状图
@@ -289,8 +606,9 @@ def plot_kline(df, symbol, period='D'):
             x=0.5,
             font=dict(size=18)
         ),
-        height=600,
+        height=820,
         showlegend=True,
+        template='plotly_white',
         legend=dict(
             orientation='h',
             yanchor='bottom',
@@ -298,32 +616,49 @@ def plot_kline(df, symbol, period='D'):
             xanchor='right',
             x=1
         ),
+        hovermode='x unified',
+        dragmode='pan',
         xaxis=dict(
             rangeslider=dict(visible=False),
             type='category',
             tickangle=45,
             showgrid=True,
-            gridcolor='#E5E5E5'
+            gridcolor='rgba(148, 163, 184, 0.18)',
+            showspikes=True,
+            spikemode='across',
+            spikesnap='cursor',
+            spikethickness=1
         ),
         yaxis=dict(
             showgrid=True,
-            gridcolor='#E5E5E5',
+            gridcolor='rgba(148, 163, 184, 0.18)',
+            showspikes=True,
+            spikethickness=1,
             tickformat='.2f'
         ),
         yaxis2=dict(
             tickformat='.0f',
             showgrid=True,
-            gridcolor='#E5E5E5'
+            gridcolor='rgba(148, 163, 184, 0.18)'
         ),
-        plot_bgcolor='#FAFAFA',
+        plot_bgcolor='#ffffff',
         paper_bgcolor='white',
-        margin=dict(t=80, l=60, r=40, b=60)
+        margin=dict(t=80, l=60, r=40, b=70)
     )
 
     # 隐藏周末空白（仅日K需要）
     if period == 'D':
         fig.update_xaxes(
-            rangebreaks=[dict(bounds=['sat', 'mon'])]
+            rangebreaks=[dict(bounds=['sat', 'mon'])],
+            rangeselector=dict(
+                buttons=list([
+                    dict(count=1, label='1M', step='month', stepmode='backward'),
+                    dict(count=3, label='3M', step='month', stepmode='backward'),
+                    dict(count=6, label='6M', step='month', stepmode='backward'),
+                    dict(count=1, label='1Y', step='year', stepmode='backward'),
+                    dict(step='all', label='ALL')
+                ])
+            )
         )
 
     return fig
@@ -760,23 +1095,119 @@ def export_signals_to_csv(signals, symbols, output_path='signals_export.csv'):
 
 # Tab 1: 自选股管理（包含行情展示）
 with tab1:
-    st.header("⭐ 自选股管理")
-    
-    # 创建两列布局：左侧自选股列表，右侧行情展示
-    col_left, col_right = st.columns([1, 2])
-    
-    with col_left:
+    if 'watchlist_view_mode' not in st.session_state:
+        st.session_state.watchlist_view_mode = 'list'
+
+    all_watchlist_stocks = wl_manager.get_all_stocks()
+    all_watchlist_symbols = [s.symbol for s in all_watchlist_stocks]
+    if all_watchlist_symbols and st.session_state.get('selected_stock') not in all_watchlist_symbols:
+        st.session_state['selected_stock'] = all_watchlist_symbols[0]
+
+    # 详情页：全宽显示K线和指标，并提供返回按钮
+    if st.session_state.watchlist_view_mode == 'detail' and st.session_state.get('selected_stock'):
+        selected_stock = st.session_state['selected_stock']
+        st.markdown(
+            """
+            <div class="market-page-title">
+                <div class="main">📈 行情详情终端</div>
+                <div class="sub">多周期K线 · 关键指标 · 明细数据</div>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+        toolbar_col1, toolbar_col2, toolbar_col3 = st.columns([1, 2, 1])
+        with toolbar_col1:
+            if st.button("← 返回自选股列表", use_container_width=True):
+                st.session_state.watchlist_view_mode = 'list'
+                st.rerun()
+        with toolbar_col2:
+            if all_watchlist_symbols:
+                selected_stock = st.selectbox(
+                    "切换股票",
+                    options=all_watchlist_symbols,
+                    index=all_watchlist_symbols.index(selected_stock) if selected_stock in all_watchlist_symbols else 0,
+                    key="detail_symbol_selector"
+                )
+                st.session_state['selected_stock'] = selected_stock
+        with toolbar_col3:
+            if st.button("刷新数据", use_container_width=True):
+                with st.spinner("正在更新行情数据..."):
+                    dm.update_recent_data([selected_stock], days=5)
+                st.rerun()
+
+        st.subheader(f"📊 {selected_stock} 行情详情")
+
+        end_date = datetime.now()
+        start_date = end_date - timedelta(days=365*3)
+        with st.spinner(f"正在加载 {selected_stock} 数据..."):
+            df = dm.get_daily_kline(
+                selected_stock,
+                start_date.strftime("%Y-%m-%d"),
+                end_date.strftime("%Y-%m-%d")
+            )
+
+        if not df.empty:
+            latest = df.iloc[-1]
+            prev = df.iloc[-2] if len(df) > 1 else latest
+            change = latest['close'] - prev['close']
+            change_pct = (change / prev['close'] * 100) if prev['close'] != 0 else 0
+            color_class = "positive" if change >= 0 else "negative"
+
+            metrics_col1, metrics_col2, metrics_col3, metrics_col4, metrics_col5 = st.columns(5)
+            with metrics_col1:
+                st.markdown("<div class='metric-label'>最新价</div>", unsafe_allow_html=True)
+                st.markdown(f"<div class='metric-value {color_class}'>{latest['close']:.2f}</div>", unsafe_allow_html=True)
+            with metrics_col2:
+                st.markdown("<div class='metric-label'>涨跌额</div>", unsafe_allow_html=True)
+                st.markdown(f"<div class='metric-value {color_class}'>{change:+.2f}</div>", unsafe_allow_html=True)
+            with metrics_col3:
+                st.markdown("<div class='metric-label'>涨跌幅</div>", unsafe_allow_html=True)
+                st.markdown(f"<div class='metric-value {color_class}'>{change_pct:+.2f}%</div>", unsafe_allow_html=True)
+            with metrics_col4:
+                st.markdown("<div class='metric-label'>成交量</div>", unsafe_allow_html=True)
+                st.markdown(f"<div class='metric-value'>{latest['volume']/10000:.0f}万</div>", unsafe_allow_html=True)
+            with metrics_col5:
+                st.markdown("<div class='metric-label'>成交额</div>", unsafe_allow_html=True)
+                st.markdown(f"<div class='metric-value'>{latest['amount']/100000000:.2f}亿</div>", unsafe_allow_html=True)
+
+            st.divider()
+            kline_period = st.radio(
+                "K线周期",
+                ["日K", "周K", "月K", "年K"],
+                horizontal=True,
+                index=0,
+                key="kline_period_selector"
+            )
+            period_map = {"日K": "D", "周K": "W", "月K": "M", "年K": "Y"}
+            period_code = period_map[kline_period]
+            df_display = resample_kline(df, period_code) if period_code != "D" else df.copy()
+
+            fig = plot_kline(df_display, selected_stock, period=period_code)
+            st.plotly_chart(fig, use_container_width=True)
+
+            with st.expander("📋 查看数据表格"):
+                st.dataframe(df.sort_values('date', ascending=False).head(50), use_container_width=True)
+        else:
+            st.error(f"无法获取 {selected_stock} 的数据")
+    else:
+        # 列表页：全宽展示，适配大量股票
+        st.markdown(
+            """
+            <div class="market-page-title">
+                <div class="main">📋 自选股交易看板</div>
+                <div class="sub">集中管理股票池，快速筛选并一键进入行情详情</div>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
         st.subheader("📋 自选股列表")
-        
-        # 添加自选股
+
         with st.expander("➕ 添加自选股", expanded=False):
             new_symbol = st.text_input("股票代码", value="", placeholder="如: 000001.SH（上证指数）或 000001.SZ（平安银行）")
             new_name = st.text_input("股票名称", value="", placeholder="如: 平安银行")
             new_group = st.selectbox("分组", ["默认", "持仓股", "银行", "消费", "科技", "医药", "新能源", "自定义"])
-            
             if new_group == "自定义":
                 new_group = st.text_input("自定义分组名")
-            
             if st.button("添加", key="add_stock"):
                 if new_symbol:
                     symbol = new_symbol.strip()
@@ -789,207 +1220,183 @@ with tab1:
                         st.error("添加失败")
                 else:
                     st.warning("请输入股票代码")
-        
-        # 分组筛选
+
         groups = wl_manager.get_groups()
-        selected_group = st.selectbox("筛选分组", ["全部"] + groups)
-        
-        # 获取股票列表
-        if selected_group == "全部":
-            stocks = wl_manager.get_all_stocks()
+        filter_col1, filter_col2, filter_col3 = st.columns(3)
+        with filter_col1:
+            selected_group = st.selectbox("筛选分组", ["全部"] + groups)
+        with filter_col2:
+            page_size = st.selectbox("每页条数", [12, 20, 30, 50], index=1)
+        with filter_col3:
+            sort_by = st.selectbox(
+                "排序方式",
+                ["涨跌幅从高到低", "涨跌幅从低到高", "成交量从高到低", "代码升序"],
+                index=0
+            )
+        keyword = st.text_input("搜索代码/名称", value="", placeholder="输入代码或名称关键字")
+
+        all_group_stocks = wl_manager.get_all_stocks() if selected_group == "全部" else wl_manager.get_stocks_by_group(selected_group)
+        keyword_lower = keyword.strip().lower()
+        stocks = [
+            s for s in all_group_stocks
+            if not keyword_lower or keyword_lower in s.symbol.lower() or keyword_lower in s.name.lower()
+        ]
+
+        if not stocks:
+            st.info("暂无匹配的自选股，请调整筛选条件。")
         else:
-            stocks = wl_manager.get_stocks_by_group(selected_group)
-        
-        if stocks:
-            # 显示股票卡片列表
+            stock_rows = []
+            up_count, down_count, flat_count = 0, 0, 0
             for stock in stocks:
-                # 获取最新行情
                 quote = get_latest_quote(stock.symbol)
-                
-                if quote:
-                    price_color = "positive" if quote['pct_change'] >= 0 else "negative"
-                    change_sign = "+" if quote['pct_change'] >= 0 else ""
-                    
-                    # 创建可点击的股票卡片
-                    card_html = f"""
-                    <div class="stock-card" onclick="">
-                        <div style="display: flex; justify-content: space-between; align-items: center;">
-                            <div>
-                                <strong>{stock.symbol}</strong> 
-                                <span style="color: #6c757d; font-size: 0.875rem;">{stock.name}</span>
-                                <span style="background: #e9ecef; padding: 2px 6px; border-radius: 4px; font-size: 0.75rem; margin-left: 8px;">{stock.group}</span>
-                            </div>
-                            <div style="text-align: right;">
-                                <div class="metric-value">{quote['close']:.2f}</div>
-                                <div class="{price_color}">{change_sign}{quote['pct_change']:.2f}%</div>
-                            </div>
-                        </div>
-                    </div>
-                    """
-                    st.markdown(card_html, unsafe_allow_html=True)
-                    
-                    # 使用按钮实现点击效果
-                    if st.button(f"查看 {stock.symbol}", key=f"view_{stock.symbol}"):
-                        # 只更新当前选中股票最近5天的数据（不包括今天）
-                        # 先查数据库，如果有数据就不从baostock获取
-                        with st.spinner("正在更新行情数据..."):
-                            dm.update_recent_data([stock.symbol], days=5)
-                        st.session_state['selected_stock'] = stock.symbol
-                        st.rerun()
-                else:
-                    st.info(f"{stock.symbol} - {stock.name} (暂无行情数据)")
-            
-            # 操作按钮
-            st.divider()
-            
-            # 删除股票
-            selected_for_delete = st.selectbox("选择要删除的股票", [""] + [s.symbol for s in stocks], key="delete_select")
-            if selected_for_delete and st.button("🗑️ 删除选中股票"):
-                success = wl_manager.remove_stock(selected_for_delete)
-                if success:
-                    st.success(f"已删除 {selected_for_delete}")
-                    if st.session_state.get('selected_stock') == selected_for_delete:
-                        del st.session_state['selected_stock']
+                pct_change = quote['pct_change'] if quote else None
+                close_price = quote['close'] if quote else None
+                volume_wan = (quote['volume'] / 10000) if quote else None
+                stock_rows.append({
+                    'symbol': stock.symbol,
+                    'name': stock.name,
+                    'group': stock.group,
+                    'close': close_price,
+                    'pct_change': pct_change,
+                    'volume_wan': volume_wan
+                })
+                if pct_change is not None:
+                    if pct_change > 0:
+                        up_count += 1
+                    elif pct_change < 0:
+                        down_count += 1
+                    else:
+                        flat_count += 1
+
+            st.markdown(
+                f"""
+                <div class="watchlist-overview">
+                    <div class="item"><div class="label">股票总数</div><div class="value">{len(stock_rows)}</div></div>
+                    <div class="item"><div class="label">上涨</div><div class="value positive">{up_count}</div></div>
+                    <div class="item"><div class="label">下跌</div><div class="value negative">{down_count}</div></div>
+                    <div class="item"><div class="label">平盘</div><div class="value">{flat_count}</div></div>
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+
+            st.markdown(
+                f"""
+                <div class="market-toolbar">
+                    <div class="label">当前筛选条件</div>
+                    <div class="value">分组：{selected_group} ｜ 排序：{sort_by} ｜ 关键字：{keyword if keyword else '无'}</div>
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+
+            if sort_by == "涨跌幅从高到低":
+                stock_rows = sorted(stock_rows, key=lambda r: (r['pct_change'] is None, -(r['pct_change'] if r['pct_change'] is not None else -999)))
+            elif sort_by == "涨跌幅从低到高":
+                stock_rows = sorted(stock_rows, key=lambda r: (r['pct_change'] is None, (r['pct_change'] if r['pct_change'] is not None else 999)))
+            elif sort_by == "成交量从高到低":
+                stock_rows = sorted(stock_rows, key=lambda r: (r['volume_wan'] is None, -(r['volume_wan'] if r['volume_wan'] is not None else -999)))
+            else:
+                stock_rows = sorted(stock_rows, key=lambda r: r['symbol'])
+
+            total_rows = len(stock_rows)
+            total_pages = max((total_rows + page_size - 1) // page_size, 1)
+            if 'watchlist_page' not in st.session_state:
+                st.session_state.watchlist_page = 1
+            filter_signature = f"{selected_group}|{keyword_lower}|{sort_by}|{page_size}|{total_rows}"
+            if st.session_state.get("watchlist_filter_signature") != filter_signature:
+                st.session_state["watchlist_filter_signature"] = filter_signature
+                st.session_state.watchlist_page = 1
+            st.session_state.watchlist_page = max(1, min(st.session_state.watchlist_page, total_pages))
+
+            page_ctrl_col1, page_ctrl_col2, page_ctrl_col3 = st.columns([1, 2, 1])
+            with page_ctrl_col1:
+                if st.button("◀ 上一页", disabled=st.session_state.watchlist_page <= 1, use_container_width=True):
+                    st.session_state.watchlist_page -= 1
                     st.rerun()
-            
-            # 导出为多股票回测列表
-            if st.button("📥 导出全部为多股票回测列表"):
-                symbol_list = [s.symbol for s in stocks]
-                st.session_state['multi_stock_symbols'] = symbol_list
-                st.success(f"已选择 {len(symbol_list)} 只股票用于回测")
-        else:
-            st.info("暂无自选股，请先添加")
-    
-    with col_right:
-        # 右侧显示选中股票的详细行情
-        selected_stock = st.session_state.get('selected_stock')
-        
-        if selected_stock:
-            st.subheader(f"📊 {selected_stock} 行情详情")
-            
-            # 获取3年日线数据
-            end_date = datetime.now()
-            start_date = end_date - timedelta(days=365*3)  # 3年
-            
-            with st.spinner(f"正在加载 {selected_stock} 数据..."):
-                df = dm.get_daily_kline(
-                    selected_stock, 
-                    start_date.strftime("%Y-%m-%d"), 
-                    end_date.strftime("%Y-%m-%d")
-                )
-            
-            if not df.empty:
-                # 显示最新行情指标
-                latest = df.iloc[-1]
-                prev = df.iloc[-2] if len(df) > 1 else latest
-                
-                change = latest['close'] - prev['close']
-                change_pct = (change / prev['close'] * 100) if prev['close'] != 0 else 0
-                color_class = "positive" if change >= 0 else "negative"
-                
-                # 显示关键指标
-                metrics_col1, metrics_col2, metrics_col3, metrics_col4, metrics_col5 = st.columns(5)
-                
-                with metrics_col1:
-                    st.markdown(f"<div class='metric-label'>最新价</div>", unsafe_allow_html=True)
-                    st.markdown(f"<div class='metric-value {color_class}'>{latest['close']:.2f}</div>", unsafe_allow_html=True)
-                
-                with metrics_col2:
-                    st.markdown(f"<div class='metric-label'>涨跌额</div>", unsafe_allow_html=True)
-                    st.markdown(f"<div class='metric-value {color_class}'>{change:+.2f}</div>", unsafe_allow_html=True)
-                
-                with metrics_col3:
-                    st.markdown(f"<div class='metric-label'>涨跌幅</div>", unsafe_allow_html=True)
-                    st.markdown(f"<div class='metric-value {color_class}'>{change_pct:+.2f}%</div>", unsafe_allow_html=True)
-                
-                with metrics_col4:
-                    st.markdown(f"<div class='metric-label'>成交量</div>", unsafe_allow_html=True)
-                    st.markdown(f"<div class='metric-value'>{latest['volume']/10000:.0f}万</div>", unsafe_allow_html=True)
-                
-                with metrics_col5:
-                    st.markdown(f"<div class='metric-label'>成交额</div>", unsafe_allow_html=True)
-                    st.markdown(f"<div class='metric-value'>{latest['amount']/100000000:.2f}亿</div>", unsafe_allow_html=True)
-                
-                st.divider()
+            with page_ctrl_col2:
+                st.caption(f"第 {st.session_state.watchlist_page}/{total_pages} 页 · 共 {total_rows} 只")
+            with page_ctrl_col3:
+                if st.button("下一页 ▶", disabled=st.session_state.watchlist_page >= total_pages, use_container_width=True):
+                    st.session_state.watchlist_page += 1
+                    st.rerun()
 
-                # K线周期选择
-                kline_period = st.radio(
-                    "K线周期",
-                    ["日K", "周K", "月K", "年K"],
-                    horizontal=True,
-                    index=0,
-                    key="kline_period_selector"
-                )
+            start_idx = (st.session_state.watchlist_page - 1) * page_size
+            end_idx = start_idx + page_size
+            page_rows = stock_rows[start_idx:end_idx]
 
-                # 根据选择的周期处理数据
-                period_map = {"日K": "D", "周K": "W", "月K": "M", "年K": "Y"}
-                period_code = period_map[kline_period]
+            table_df = pd.DataFrame([
+                {
+                    '代码': row['symbol'],
+                    '名称': row['name'],
+                    '最新价': row['close'],
+                    '涨跌幅(%)': row['pct_change'],
+                    '成交量(万)': row['volume_wan'],
+                    '分组': row['group']
+                } for row in page_rows
+            ])
 
-                # 如果不是日K，需要重采样
-                if period_code != "D":
-                    df_display = resample_kline(df, period_code)
-                else:
-                    df_display = df.copy()
+            fmt_map = {
+                '最新价': lambda x: "-" if pd.isna(x) else f"{x:.2f}",
+                '涨跌幅(%)': lambda x: "-" if pd.isna(x) else f"{x:+.2f}",
+                '成交量(万)': lambda x: "-" if pd.isna(x) else f"{x:.1f}",
+            }
+            interactive_df = table_df.copy()
+            interactive_df['涨跌幅(%)'] = interactive_df['涨跌幅(%)'].apply(
+                lambda x: "-" if pd.isna(x) else f"{x:+.2f}"
+            )
+            interactive_df['最新价'] = interactive_df['最新价'].apply(
+                lambda x: "-" if pd.isna(x) else f"{x:.2f}"
+            )
+            interactive_df['成交量(万)'] = interactive_df['成交量(万)'].apply(
+                lambda x: "-" if pd.isna(x) else f"{x:.1f}"
+            )
 
-                # 显示K线图
-                fig = plot_kline(df_display, selected_stock, period=period_code)
-                st.plotly_chart(fig, use_container_width=True)
-                
-                # 显示数据表格
-                with st.expander("📋 查看数据表格"):
-                    st.dataframe(df.sort_values('date', ascending=False).head(50), use_container_width=True)
-            else:
-                st.error(f"无法获取 {selected_stock} 的数据")
-        else:
-            # 未选中股票时，显示所有自选股的最新行情概览
-            st.subheader("📈 自选股行情概览")
-            
-            if stocks:
-                quotes_data = []
-                for stock in stocks:
-                    quote = get_latest_quote(stock.symbol)
-                    if quote:
-                        quotes_data.append({
-                            '股票代码': stock.symbol,
-                            '股票名称': stock.name,
-                            '最新价': quote['close'],
-                            '涨跌额': quote['close'] - quote['open'],
-                            '涨跌幅': quote['pct_change'],
-                            '成交量(万)': quote['volume'] / 10000,
-                            '分组': stock.group
-                        })
-                
-                if quotes_data:
-                    quotes_df = pd.DataFrame(quotes_data)
+            table_event = st.dataframe(
+                interactive_df,
+                use_container_width=True,
+                hide_index=True,
+                height=520,
+                on_select="rerun",
+                selection_mode="single-row"
+            )
+            st.markdown("<div class='table-caption'>点击任意行可直接进入该股票行情详情页</div>", unsafe_allow_html=True)
 
-                    # 使用pandas的format功能保留两位小数（Streamlit的st.dataframe需要这样格式化）
-                    float_format = lambda x: f'{x:.2f}'
-                    styled_df = quotes_df.style.format({
-                        '最新价': float_format,
-                        '涨跌额': float_format,
-                        '涨跌幅': float_format,
-                        '成交量(万)': float_format
-                    }, na_rep='-')
+            selected_rows = []
+            if isinstance(table_event, dict):
+                selected_rows = table_event.get("selection", {}).get("rows", [])
+            elif hasattr(table_event, "selection") and hasattr(table_event.selection, "rows"):
+                selected_rows = table_event.selection.rows
+            if selected_rows:
+                selected_idx = selected_rows[0]
+                if 0 <= selected_idx < len(page_rows):
+                    st.session_state['selected_stock'] = page_rows[selected_idx]['symbol']
+                    st.session_state.watchlist_view_mode = 'detail'
+                    st.rerun()
 
-                    # 使用样式突出涨跌
-                    def highlight_change(val):
-                        if isinstance(val, (int, float)):
-                            if val > 0:
-                                return 'color: #dc3545'  # 红色表示涨
-                            elif val < 0:
-                                return 'color: #28a745'  # 绿色表示跌
-                        return ''
+            all_symbols = [r['symbol'] for r in stock_rows]
+            current_view_symbol = st.session_state.get('selected_stock', all_symbols[0] if all_symbols else None)
+            if current_view_symbol not in all_symbols and all_symbols:
+                current_view_symbol = all_symbols[0]
 
-                    styled_df = styled_df.applymap(highlight_change, subset=['涨跌额', '涨跌幅'])
-                    st.dataframe(styled_df, use_container_width=True, hide_index=True)
-                else:
-                    st.info("暂无行情数据")
-            else:
-                st.info("请先添加自选股")
+            action_col1, action_col2 = st.columns(2)
+            with action_col1:
+                if current_view_symbol and st.button("删除当前股票", use_container_width=True):
+                    success = wl_manager.remove_stock(current_view_symbol)
+                    if success:
+                        st.success(f"已删除 {current_view_symbol}")
+                        st.session_state.pop('selected_stock', None)
+                        st.rerun()
+                    else:
+                        st.error("删除失败")
+            with action_col2:
+                if st.button("导出本组", use_container_width=True):
+                    st.session_state['multi_stock_symbols'] = all_symbols
+                    st.success(f"已选择 {len(all_symbols)} 只股票用于回测")
 
 # Tab 2: 策略回测
 with tab2:
-    st.header("🎯 策略回测")
+    render_section_title("策略回测", "🎯", "支持单股/组合回测与参数化策略配置")
 
     # 回测参数设置（移到主区域）
     with st.expander("⚙️ 回测参数设置", expanded=True):
@@ -1313,7 +1720,7 @@ with tab3:
 
 # Tab 4: 信号扫描
 with tab4:
-    st.header("📈 信号扫描")
+    render_section_title("信号扫描", "📈", "按策略批量扫描买卖信号并导出结果")
 
     # 顶部控制面板
     col_ctrl1, col_ctrl2, col_ctrl3 = st.columns([1, 1, 1])
@@ -1542,7 +1949,7 @@ with tab4:
 
 # Tab 5: 绩效分析
 with tab5:
-    st.header("📉 绩效分析")
+    render_section_title("绩效分析", "📉", "汇总回测表现并沉淀关键风险收益指标")
     st.info("请选择要分析的回测结果")
 
 # Tab 6: 因子分析

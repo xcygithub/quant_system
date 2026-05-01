@@ -71,6 +71,32 @@ DEFAULT_FACTORS = {
 # 页面渲染函数
 # =============================================================================
 
+def _render_page_title():
+    """渲染页面标题"""
+    st.markdown(
+        """
+        <div class="section-title">
+            <div class="main">📊 多因子回测</div>
+            <div class="desc">统一配置因子、权重与风控参数，快速评估组合策略稳定性</div>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+
+def _render_subsection_title(title: str, icon: str = "📌", desc: str = ""):
+    """渲染子分区标题"""
+    subtitle = f'<div class="desc">{desc}</div>' if desc else ""
+    st.markdown(
+        f"""
+        <div class="section-title" style="margin-top: 0;">
+            <div class="main">{icon} {title}</div>
+            {subtitle}
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
 def render_factor_backtest_page(dm: DataManager, wl_manager):
     """
     渲染因子回测页面
@@ -79,7 +105,7 @@ def render_factor_backtest_page(dm: DataManager, wl_manager):
         dm: DataManager 实例
         wl_manager: WatchlistManager 实例
     """
-    st.header("📊 多因子回测")
+    _render_page_title()
 
     # 初始化 session state
     _init_session_state()
@@ -110,7 +136,7 @@ def _render_sidebar_config(dm: DataManager, wl_manager) -> Dict[str, Any]:
     Returns:
         配置字典
     """
-    st.markdown("### 📋 因子配置")
+    _render_subsection_title("因子配置", "📋", "选择可解释的因子组合并设置加权方式")
 
     # ---------- 因子选择 ----------
     selected_factors = {}
@@ -195,7 +221,7 @@ def _render_sidebar_config(dm: DataManager, wl_manager) -> Dict[str, Any]:
 
     # ---------- 回测参数 ----------
     st.markdown("---")
-    st.markdown("### ⚙️ 回测参数")
+    _render_subsection_title("回测参数", "⚙️", "设置股票池、资金规模、调仓与风控约束")
 
     # 股票池来源
     stock_source = st.selectbox(
@@ -293,7 +319,7 @@ def _render_sidebar_config(dm: DataManager, wl_manager) -> Dict[str, Any]:
 
     # ---------- 执行按钮 ----------
     st.markdown("---")
-    st.markdown("### 🚀 执行回测")
+    _render_subsection_title("执行回测", "🚀", "检查参数后启动策略回放")
 
     col1, col2 = st.columns(2)
     with col1:
@@ -556,6 +582,7 @@ def _render_results(results: Dict[str, Any]):
 
 def _render_returns_overview(results: Dict[str, Any]):
     """渲染收益概览"""
+    _render_subsection_title("收益概览", "📈", "查看核心收益风险指标与权益曲线")
 
     # 收益指标卡片
     col1, col2, col3, col4, col5 = st.columns(5)
@@ -631,6 +658,7 @@ def _render_returns_overview(results: Dict[str, Any]):
 
 def _render_factor_analysis(results: Dict[str, Any]):
     """渲染因子分析"""
+    _render_subsection_title("因子分析", "🧪", "追踪权重变化、有效性和收益归因")
 
     factor_report = results.get('factor_report', {})
 
@@ -742,6 +770,7 @@ def _render_factor_analysis(results: Dict[str, Any]):
 
 def _render_trade_details(results: Dict[str, Any]):
     """渲染交易明细（含因子信息）"""
+    _render_subsection_title("交易明细", "📋", "支持筛选交易记录并查看因子得分")
 
     trade_details = results.get('trade_details')
 
@@ -888,6 +917,7 @@ def _render_trade_radar(row: pd.Series, factor_names: List[str]):
 
 def _render_rebalance_history(results: Dict[str, Any]):
     """渲染调仓记录"""
+    _render_subsection_title("调仓记录", "🔄", "按调仓日复盘买卖逻辑与候选池变化")
 
     snapshots = results.get('rebalance_snapshots', [])
     factor_names = results.get('factor_names', [])
@@ -1000,8 +1030,7 @@ def _render_rebalance_history(results: Dict[str, Any]):
 
 def _render_config_management(results: Dict[str, Any]):
     """渲染配置管理"""
-
-    st.markdown("### 💾 配置管理")
+    _render_subsection_title("配置管理", "💾", "保存策略参数并管理回测输出")
 
     config = st.session_state.get('mfbt_config', {})
 

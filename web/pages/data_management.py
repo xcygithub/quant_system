@@ -150,10 +150,36 @@ def get_stock_count() -> int:
 # 页面渲染
 # =============================================================================
 
+def _render_page_title():
+    """渲染页面标题"""
+    st.markdown(
+        """
+        <div class="section-title">
+            <div class="main">📥 财务数据管理</div>
+            <div class="desc">统一管理财务报表、估值与行情数据，保障研究与回测数据质量</div>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+
+def _render_subsection_title(title: str, icon: str = "📌", desc: str = ""):
+    """渲染子分区标题"""
+    subtitle = f'<div class="desc">{desc}</div>' if desc else ""
+    st.markdown(
+        f"""
+        <div class="section-title" style="margin-top: 0;">
+            <div class="main">{icon} {title}</div>
+            {subtitle}
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
 def render_data_management_page():
     """渲染财务数据管理页面"""
 
-    st.header("📥 财务数据管理")
+    _render_page_title()
 
     # 获取数据状态
     status = get_data_status()
@@ -162,7 +188,7 @@ def render_data_management_page():
     # -------------------------------------------------------------------------
     # 1. 数据源状态总览
     # -------------------------------------------------------------------------
-    st.subheader("📊 数据源状态总览")
+    _render_subsection_title("数据源状态总览", "📊", "掌握各表记录量与最新日期，快速判断可用性")
 
     # 显示指标卡片
     col1, col2, col3, col4 = st.columns(4)
@@ -208,7 +234,7 @@ def render_data_management_page():
     # -------------------------------------------------------------------------
     # 2. 获取方式选择
     # -------------------------------------------------------------------------
-    st.subheader("🔄 获取财务数据")
+    _render_subsection_title("获取财务数据", "🔄", "支持全市场、自选股或单只股票增量更新")
 
     fetch_mode = st.radio(
         "获取范围",
@@ -406,7 +432,7 @@ def render_data_management_page():
     # -------------------------------------------------------------------------
     # 4. 批量操作
     # -------------------------------------------------------------------------
-    st.subheader("🛠️ 批量操作")
+    _render_subsection_title("批量操作", "🛠️", "查看结构、清理历史与刷新状态")
 
     col_batch1, col_batch2, col_batch3 = st.columns(3)
 
@@ -472,7 +498,7 @@ def render_data_management_page():
     # -------------------------------------------------------------------------
     # 5. 财报披露日历提示
     # -------------------------------------------------------------------------
-    st.subheader("📅 财报披露日历")
+    _render_subsection_title("财报披露日历", "📅", "根据披露窗口合理安排财务数据更新频率")
 
     current_month = datetime.now().month
     current_day = datetime.now().day

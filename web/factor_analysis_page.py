@@ -20,6 +20,32 @@ from web.factor_presenter import FactorPresenter
 # 页面渲染函数
 # =============================================================================
 
+def _render_page_title():
+    """渲染页面标题"""
+    st.markdown(
+        """
+        <div class="section-title">
+            <div class="main">🔬 因子分析</div>
+            <div class="desc">支持单股因子洞察与多股横向排名，帮助快速识别优质标的</div>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+
+def _render_subsection_title(title: str, icon: str = "📌", desc: str = ""):
+    """渲染子分区标题"""
+    subtitle = f'<div class="desc">{desc}</div>' if desc else ""
+    st.markdown(
+        f"""
+        <div class="section-title" style="margin-top: 0;">
+            <div class="main">{icon} {title}</div>
+            {subtitle}
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
 def render_factor_analysis_page(dm: DataManager, wl_manager: WatchlistManager):
     """
     渲染因子分析页面
@@ -28,7 +54,7 @@ def render_factor_analysis_page(dm: DataManager, wl_manager: WatchlistManager):
         dm: DataManager 实例
         wl_manager: WatchlistManager 实例
     """
-    st.header("🔬 因子分析")
+    _render_page_title()
 
     # 初始化 session state
     _init_factor_session_state()
@@ -59,7 +85,7 @@ def _init_factor_session_state():
 
 def _render_calc_section(dm: DataManager, wl_manager: WatchlistManager):
     """渲染因子计算区域"""
-    st.subheader("📊 因子计算")
+    _render_subsection_title("因子计算", "📊", "批量计算与导出当前股票池因子数据")
 
     # 获取自选股列表
     watchlist = wl_manager.get_all_stocks()
@@ -199,7 +225,7 @@ def _export_factors_csv():
 
 def _render_display_section(dm: DataManager, wl_manager: WatchlistManager):
     """渲染因子展示区域"""
-    st.subheader("📈 因子查询")
+    _render_subsection_title("因子查询", "📈", "按单股或多股维度查看因子值与排名")
 
     # 视图模式切换
     view_mode = st.radio(
