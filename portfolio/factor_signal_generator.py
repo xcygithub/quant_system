@@ -168,26 +168,22 @@ class FactorSignalGenerator:
 
         for symbol in factor_data.index:
             percentile_scores[symbol] = {}
-            row = factor_data.loc[symbol]
 
             for factor_name in factor_data.columns:
                 factor_values = factor_data[factor_name].dropna()
-
 
                 if len(factor_values) < 2:
                     percentile_scores[symbol][factor_name] = 50.0
                     continue
 
-                # 使用秩次计算百分位
-                if rankdata is not None:
-                    # scipy 方式
-                    rank = rankdata(factor_values)[list(factor_data.index).index(symbol)]
-                    percentile = (rank - 1) / (len(factor_values) - 1) * 100
-                else:
-                    # pandas 方式
-                    factor_series = pd.Series(factor_values.values, index=factor_values.index)
-                    rank = factor_series.rank()[symbol]
-                    percentile = (rank - 1) / (len(factor_values) - 1) * 100
+                # 该股票在此因子上若缺失，使用中性分，避免索引越界
+                if symbol not in factor_values.index:
+                    percentile_scores[symbol][factor_name] = 50.0
+                    continue
+
+                # 使用带索引的 rank，确保 symbol 与 rank 一一对应
+                rank = factor_values.rank(method="average").loc[symbol]
+                percentile = (rank - 1) / (len(factor_values) - 1) * 100
                 percentile_scores[symbol][factor_name] = percentile
 
         return percentile_scores

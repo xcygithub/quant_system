@@ -10,18 +10,21 @@ from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
 
 from data.data_manager import DataManager
-from data.data_provider import CacheOnlyProvider
-from data.factor_data import FactorData
-from backtest.performance import PerformanceAnalyzer
-from strategy.moving_average import MovingAverageCrossStrategy, MACDStrategy, BollingerBandsStrategy
-from strategy.multi_factor import MultiFactorStrategy, RSIStrategy
 from portfolio.watchlist import WatchlistManager
-from portfolio.multi_stock_backtest import MultiStockBacktest
-from portfolio.multi_factor_backtest import run_multi_factor_backtest
 from portfolio.signal_scanner import SignalScanner, ScanResult, ScanSignal
 from web.factor_backtest_page import render_factor_backtest_page, FACTOR_CATEGORIES, DEFAULT_FACTORS
 from web.factor_analysis_page import render_factor_analysis_page
 from web.pages.data_management import render_data_management_page
+from web.services.backtest_service import (
+    load_backtest_stock_data,
+    run_multi_factor_strategy_backtest,
+    run_standard_strategy_backtest,
+)
+from web.services.backtest_params_service import build_run_config, validate_run_config
+from web.services.backtest_presenter import (
+    render_multi_factor_results,
+    render_standard_results,
+)
 
 # 页面配置
 st.set_page_config(
@@ -72,7 +75,9 @@ st.markdown("""
 # 初始化数据管理器
 @st.cache_resource
 def get_data_manager():
-    return DataManager()
+    manager = DataManager()
+    print(f"[CONFIG] 当前数据库路径: {manager.db_path}")
+    return manager
 
 dm = get_data_manager()
 
@@ -1192,301 +1197,113 @@ with tab2:
         if not selected_stocks:
             st.warning("请至少选择一只股票进行回测")
         else:
-            # 根据选中数量决定回测模式
-            is_single_stock = len(selected_stocks) == 1
-            symbols = list(selected_stocks)
+            run_config = build_run_config(
+                selected_stocks=selected_stocks,
+                strategy_name=strategy_name,
+                start_date=start_date,
+                end_date=end_date,
+                initial_capital=initial_capital,
+                commission_rate=commission_rate,
+                max_positions=max_positions,
+                rebalance_days=rebalance_days,
+                position_method=position_method,
+                max_single_position=max_single,
+                max_total_position=max_total,
+                stop_loss=stop_loss,
+                strategy_params=strategy_params,
+                session_state=st.session_state,
+            )
 
-            # 判断是否是多因子策略
-            is_multi_factor = (strategy_name == "多因子 (Multi-Factor)")
+            config_errors = validate_run_config(run_config)
+            if config_errors:
+                for err in config_errors:
+                    st.error(err)
+            else:
+                with st.spinner(
+                    f"正在运行{'单股票' if run_config['is_single_stock'] else '多股票'}"
+                    f"{'多因子' if run_config['is_multi_factor'] else run_config['strategy_name']}回测..."
+                ):
+                    stock_data = load_backtest_stock_data(
+                        dm.db_path,
+                        run_config["symbols"],
+                        run_config["start_date_str"],
+                        run_config["end_date_str"],
+                    )
 
-            with st.spinner(f"正在运行{'单股票' if is_single_stock else '多股票'}{'多因子' if is_multi_factor else strategy_name}回测..."):
-                # 获取数据（使用 CacheOnlyProvider，只读数据库，不触发网络请求）
-                cache_provider = CacheOnlyProvider(dm.db_path)
-                stock_data = {}
-                for sym in symbols:
-                    df = cache_provider.get_stock_data(sym, start_date.strftime("%Y-%m-%d"), end_date.strftime("%Y-%m-%d"))
-                    if not df.empty:
-                        stock_data[sym] = df
-
-                if len(stock_data) == 0:
-                    st.error("所有股票都没有获取到数据!")
-                else:
-                    # ==================== 多因子回测模式 ====================
-                    if is_multi_factor:
-                        # 获取因子配置
-                        mf_factor_weights = st.session_state.get('mf_factor_weights', {})
-                        mf_use_ic = st.session_state.get('mf_use_ic', True)
-                        # 从slider widget直接获取IC参数
-                        mf_ic_update_freq = st.session_state.get('mf_ic_update_freq', 60)
-                        mf_ic_lookback = st.session_state.get('mf_ic_lookback', 120)
-
-                        if not mf_factor_weights:
-                            st.warning("请先在左侧配置多因子权重")
-                        else:
-                            with st.spinner("正在运行多因子回测..."):
-                                try:
-                                    # 调用多因子回测
-                                    results = run_multi_factor_backtest(
-                                        symbols=symbols,
-                                        stock_data=stock_data,
-                                        start_date=start_date.strftime("%Y-%m-%d"),
-                                        end_date=end_date.strftime("%Y-%m-%d"),
-                                        initial_capital=initial_capital,
-                                        max_positions=max_positions if not is_single_stock else 1,
-                                        rebalance_days=rebalance_days,
-                                        factor_weights=mf_factor_weights,
-                                        use_ic_weighting=mf_use_ic,
-                                        ic_update_freq=mf_ic_update_freq,
-                                        commission_rate=commission_rate,
-                                        max_single_position=max_single,
-                                        max_total_position=max_total,
-                                        stop_loss=stop_loss
-                                    )
-
-                                    st.session_state['multi_backtest_results'] = results
-                                    st.session_state['is_multi_factor_backtest'] = True
-
-                                    st.success(f"✅ 多因子回测完成! 共回测 {len(stock_data)} 只股票")
-
-                                    # 显示结果
-                                    if results:
-                                        col1, col2, col3, col4 = st.columns(4)
-                                        with col1:
-                                            st.metric("总收益率", f"{results.get('total_return', 0):.2%}")
-                                        with col2:
-                                            st.metric("年化收益率", f"{results.get('annual_return', 0):.2%}")
-                                        with col3:
-                                            st.metric("夏普比率", f"{results.get('sharpe_ratio', 0):.2f}")
-                                        with col4:
-                                            st.metric("最大回撤", f"{results.get('max_drawdown', 0):.2%}")
-
-                                        # 显示权益曲线
-                                        equity_df = results.get('equity_curve')
-                                        if equity_df is not None and not equity_df.empty:
-                                            fig = go.Figure()
-                                            fig.add_trace(go.Scatter(
-                                                x=equity_df['date'],
-                                                y=equity_df['total_value'],
-                                                name='组合权益',
-                                                line=dict(color='#1f77b4', width=2)
-                                            ))
-                                            # 如果有基准，添加基准曲线
-                                            if 'benchmark' in equity_df.columns:
-                                                fig.add_trace(go.Scatter(
-                                                    x=equity_df['date'],
-                                                    y=equity_df['benchmark'],
-                                                    name='基准',
-                                                    line=dict(color='#888888', width=1, dash='dash')
-                                                ))
-                                            fig.update_layout(
-                                                title='多因子组合权益曲线',
-                                                xaxis_title='日期',
-                                                yaxis_title='净值',
-                                                height=400,
-                                                showlegend=True,
-                                                legend=dict(orientation="h", yanchor="bottom", y=1.02)
-                                            )
-                                            st.plotly_chart(fig, use_container_width=True)
-
-                                        # 因子分析报告
-                                        factor_report = results.get('factor_report', {})
-                                        if factor_report:
-                                            st.divider()
-                                            st.subheader("📊 因子分析报告")
-
-                                            # 因子权重对比
-                                            ic_weights = factor_report.get('ic_weights', {})
-                                            base_weights = factor_report.get('factor_weights', {})
-
-                                            if ic_weights and base_weights:
-                                                col_w1, col_w2 = st.columns(2)
-                                                with col_w1:
-                                                    st.markdown("**因子权重对比**")
-                                                    weight_data = []
-                                                    for factor in base_weights:
-                                                        weight_data.append({
-                                                            '因子': factor,
-                                                            '基础权重': f"{base_weights[factor]:.1%}",
-                                                            'IC权重': f"{ic_weights.get(factor, 0):.1%}",
-                                                            '变化': f"{ic_weights.get(factor, 0) - base_weights[factor]:+.1%}"
-                                                        })
-                                                    if weight_data:
-                                                        st.dataframe(pd.DataFrame(weight_data), use_container_width=True)
-
-                                                with col_w2:
-                                                    st.markdown("**IC 有效性判定**")
-                                                    ic_validity = factor_report.get('ic_validity_report', {})
-                                                    validity_colors = {
-                                                        'strong': '🟢',
-                                                        'normal': '🟡',
-                                                        'weak': '🟠',
-                                                        'invalid': '🔴'
-                                                    }
-                                                    validity_data = []
-                                                    for factor, stats in ic_validity.items():
-                                                        validity_data.append({
-                                                            '因子': factor,
-                                                            'IC均值': f"{stats.get('ic_mean', 0):.3f}",
-                                                            'IR': f"{stats.get('ir', 0):.2f}",
-                                                            '判定': f"{validity_colors.get(stats.get('validity', 'invalid'), '⚪')} {stats.get('validity', 'unknown')}"
-                                                        })
-                                                    if validity_data:
-                                                        st.dataframe(pd.DataFrame(validity_data), use_container_width=True)
-
-                                except Exception as e:
-                                    st.error(f"多因子回测出错: {str(e)}")
-                                    import traceback
-                                    st.code(traceback.format_exc())
-
-                    # ==================== 普通策略回测模式 ====================
+                    if len(stock_data) == 0:
+                        st.error("所有股票都没有获取到数据!")
                     else:
-                        signals = {}
-                        for sym, df in stock_data.items():
-                            try:
-                                factor_data = FactorData(df)
-                                df_with_factors = factor_data.calculate_all_factors()
+                        # ==================== 多因子回测模式 ====================
+                        if run_config["is_multi_factor"]:
+                            run_result = run_multi_factor_strategy_backtest(
+                                symbols=run_config["symbols"],
+                                stock_data=stock_data,
+                                start_date=run_config["start_date_str"],
+                                end_date=run_config["end_date_str"],
+                                initial_capital=run_config["initial_capital"],
+                                max_positions=run_config["max_positions"],
+                                rebalance_days=run_config["rebalance_days"],
+                                factor_weights=run_config["mf_factor_weights"],
+                                use_ic_weighting=run_config["mf_use_ic"],
+                                ic_update_freq=run_config["mf_ic_update_freq"],
+                                commission_rate=run_config["commission_rate"],
+                                max_single_position=run_config["max_single_position"],
+                                max_total_position=run_config["max_total_position"],
+                                stop_loss=run_config["stop_loss"],
+                            )
 
-                                if strategy_name == "均线交叉 (MA Cross)":
-                                    strat = MovingAverageCrossStrategy(strategy_params)
-                                elif strategy_name == "MACD":
-                                    strat = MACDStrategy(strategy_params)
-                                elif strategy_name == "布林带 (Bollinger Bands)":
-                                    strat = BollingerBandsStrategy(strategy_params)
-                                else:  # RSI
-                                    strat = RSIStrategy(strategy_params)
+                            if run_result.get("error"):
+                                st.warning(run_result["error"]) if "配置" in run_result["error"] else st.error(run_result["error"])
+                                if run_result.get("traceback"):
+                                    st.code(run_result["traceback"])
+                            else:
+                                results = run_result["results"]
 
-                                signal_series = strat.get_signal_series(df_with_factors)
-                                if 'date' in df.columns:
-                                    signal_series.index = pd.to_datetime(df['date'])
-                                signals[sym] = signal_series
-                            except Exception as e:
-                                st.warning(f"{sym} 信号计算失败: {e}")
+                                st.session_state['multi_backtest_results'] = results
+                                st.session_state['is_multi_factor_backtest'] = True
 
-                        if not signals:
-                            st.error("所有股票信号计算失败!")
+                                render_multi_factor_results(results, len(stock_data))
+
+                        # ==================== 普通策略回测模式 ====================
                         else:
-                            # 运行回测
-                            actual_max_positions = 1 if is_single_stock else max_positions
-                            engine = MultiStockBacktest(
-                                initial_capital=initial_capital,
-                                commission_rate=commission_rate,
-                                max_positions=actual_max_positions,
-                                rebalance_days=rebalance_days,
-                                position_method=position_method,
-                                max_single_position=max_single,
-                                max_total_position=max_total,
-                                stop_loss=-stop_loss
+                            run_result = run_standard_strategy_backtest(
+                                stock_data=stock_data,
+                                strategy_name=run_config["strategy_name"],
+                                strategy_params=run_config["strategy_params"],
+                                start_date=run_config["start_date_str"],
+                                end_date=run_config["end_date_str"],
+                                initial_capital=run_config["initial_capital"],
+                                commission_rate=run_config["commission_rate"],
+                                max_positions=run_config["max_positions"],
+                                rebalance_days=run_config["rebalance_days"],
+                                position_method=run_config["position_method"],
+                                max_single_position=run_config["max_single_position"],
+                                max_total_position=run_config["max_total_position"],
+                                stop_loss=run_config["stop_loss"],
                             )
 
-                            engine.set_data(stock_data, signals)
-                            results = engine.run(
-                                start_date.strftime("%Y-%m-%d"),
-                                end_date.strftime("%Y-%m-%d")
-                            )
+                            for warning_msg in run_result.get("warnings", []):
+                                st.warning(warning_msg)
 
-                            st.session_state['multi_backtest_results'] = results
-                            st.session_state['is_multi_factor_backtest'] = False
+                            if run_result.get("error"):
+                                st.error(run_result["error"])
+                            else:
+                                results = run_result["results"]
+                                signals = run_result["signals"]
+                                engine = run_result["engine"]
 
-                            st.success(f"✅ 回测完成! 共回测 {len(stock_data)} 只股票")
+                                st.session_state['multi_backtest_results'] = results
+                                st.session_state['is_multi_factor_backtest'] = False
 
-                            # 显示结果
-                            if results:
-                                col1, col2, col3, col4 = st.columns(4)
-                                with col1:
-                                    st.metric("总收益率", f"{results['total_return']:.2%}")
-                                with col2:
-                                    st.metric("年化收益率", f"{results['annual_return']:.2%}")
-                                with col3:
-                                    st.metric("夏普比率", f"{results['sharpe_ratio']:.2f}")
-                                with col4:
-                                    st.metric("最大回撤", f"{results['max_drawdown']:.2%}")
-
-                                # 显示权益曲线
-                                equity_df = results.get('equity_curve')
-                                if equity_df is not None and not equity_df.empty:
-                                    fig = go.Figure()
-                                    fig.add_trace(go.Scatter(
-                                        x=equity_df['date'],
-                                        y=equity_df['total_value'],
-                                        name='组合净值',
-                                        line=dict(color='blue')
-                                    ))
-                                    fig.update_layout(
-                                        title='多股票组合权益曲线',
-                                        xaxis_title='日期',
-                                        yaxis_title='净值',
-                                        height=400
-                                    )
-                                    st.plotly_chart(fig, use_container_width=True)
-
-                                # 多股票信号图选项
-                                signal_chart_type = st.radio(
-                                    "📈 信号图展示方式",
-                                    ["子图分股票展示", "热力图展示", "不显示信号图"],
-                                    horizontal=True,
-                                    key="signal_chart_type"
+                                render_standard_results(
+                                    results=results,
+                                    stock_data=stock_data,
+                                    signals=signals,
+                                    engine=engine,
+                                    plot_multi_stock_signals=plot_multi_stock_signals,
+                                    plot_signals_heatmap=plot_signals_heatmap,
+                                    export_signals_to_csv=export_signals_to_csv,
                                 )
-
-                                if signal_chart_type != "不显示信号图":
-                                    if signal_chart_type == "子图分股票展示":
-                                        fig_signals = plot_multi_stock_signals(stock_data, signals, list(stock_data.keys()))
-                                        if fig_signals:
-                                            st.plotly_chart(fig_signals, use_container_width=True)
-                                    else:
-                                        all_dates = equity_df['date'].tolist() if equity_df is not None and not equity_df.empty else []
-                                        fig_heatmap = plot_signals_heatmap(signals, list(stock_data.keys()), all_dates)
-                                        if fig_heatmap:
-                                            st.plotly_chart(fig_heatmap, use_container_width=True)
-
-                                # 导出信号数据
-                                if st.button("📥 导出信号数据到CSV"):
-                                    try:
-                                        output_path = f"multi_stock_signals_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
-                                        export_signals_to_csv(signals, list(stock_data.keys()), output_path)
-                                        st.success(f"✅ 信号数据已导出到: {output_path}")
-                                    except Exception as e:
-                                        st.error(f"导出失败: {e}")
-
-                                # 显示完整的每次操作收益率表格
-                                trade_details_df = engine.get_trade_details_df()
-                                if not trade_details_df.empty:
-                                    st.subheader("📋 每次操作收益率明细")
-
-                                    # 统计信息
-                                    closed_trades = [td for td in engine.trade_details if td.status == 'closed']
-                                    open_trades = [td for td in engine.trade_details if td.status == 'open']
-
-                                    stat_col1, stat_col2, stat_col3, stat_col4 = st.columns(4)
-                                    with stat_col1:
-                                        st.metric("总交易次数", len(engine.trade_details))
-                                    with stat_col2:
-                                        st.metric("已完成交易", len(closed_trades))
-                                    with stat_col3:
-                                        st.metric("持有中", len(open_trades))
-                                    with stat_col4:
-                                        if closed_trades:
-                                            win_count = len([t for t in closed_trades if t.net_return_rate > 0])
-                                            win_rate = win_count / len(closed_trades)
-                                            st.metric("胜率", f"{win_rate:.2%}")
-                                        else:
-                                            st.metric("胜率", "—")
-
-                                    st.dataframe(trade_details_df, use_container_width=True, hide_index=True)
-
-                                    # 持仓明细
-                                    if open_trades:
-                                        st.markdown("**📌 持仓明细（持有中）:**")
-                                        for td in open_trades:
-                                            return_rate_pct = td.return_rate * 100
-                                            st.markdown(
-                                                f"- {td.symbol}: 买入日期 {str(td.entry_date)[:10]}, "
-                                                f"价格 {td.entry_price:.2f}元, 数量 {td.entry_quantity}股, "
-                                                f"当前价 {td.exit_price:.2f}元, "
-                                                f"持有 {td.holding_days}天, "
-                                                f"浮动盈亏 {td.profit:+,.2f}元 ({return_rate_pct:+.2f}%)"
-                                            )
-                                else:
-                                    st.info("本次回测无交易记录")
 
 # Tab 3: 多因子回测
 with tab3:

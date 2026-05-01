@@ -41,6 +41,7 @@ class QuantSystem:
         self.data_manager = DataManager(
             db_path=self.config.get('db_path', None)  # 默认使用统一的数据库路径
         )
+        print(f"[CONFIG] 当前数据库路径: {self.data_manager.db_path}")
         
         self.risk_manager = RiskManager(
             limits=RiskLimits(
