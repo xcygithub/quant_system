@@ -331,4 +331,30 @@ config.set('data_sources.priority', ['baostock', 'csv'])
 
 ---
 
+## 七、阶段性重构进展（截至 2026-05-01）
+
+### 7.1 已完成事项
+
+| 阶段 | 目标 | 完成情况 |
+|------|------|---------|
+| **阶段1** | 入口和路径统一 | ✅ 完成：统一 `config.DATABASE_PATH`，清理 `sys.path` 补丁，补充启动路径自检日志 |
+| **阶段2** | Web 服务层抽离 | ✅ 完成：新增 `web/services/backtest_service.py`、`backtest_presenter.py`、`backtest_params_service.py`，`web/app.py` 主要负责 UI 编排 |
+| **阶段3（第一批）** | DataManager 职责拆分 | ✅ 完成：新增 `MarketDataService`，`DataManager` 对市场数据能力改为薄代理 |
+| **阶段3（第二批）** | 连接与更新逻辑下沉 | ✅ 完成：`KlineManager.update_recent_data` 下沉；`FinancialDataManager` 在 `DataManager` 内复用并提供 `close()` |
+| **阶段4** | 测试与文档补齐 | ✅ 完成：新增服务层与配置路径测试；更新 README 与本架构文档 |
+
+### 7.2 数据源策略调整
+
+- 已移除 `akshare` 与 `tushare` 依赖和运行链路。
+- 当前运行链路以 `baostock` 为主，`eastmoney/csv` 为备选（见 `data/data_sources.py`）。
+
+### 7.3 新增测试（阶段4）
+
+- `tests/test_services_phase4.py`：覆盖服务层回测逻辑与参数校验。
+- `tests/test_config_paths_phase4.py`：覆盖配置路径一致性校验（`PROJECT_ROOT/DATABASE_PATH/CACHE_DIR`）。
+
+> 说明：当前环境未安装 `pytest`，验证时可通过直接执行测试函数进行检查。
+
+---
+
 *本文档为架构分析记录，随着重构推进应及时更新状态和进度。*

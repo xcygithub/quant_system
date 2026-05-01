@@ -13,7 +13,8 @@ K线数据管理器 - 日线/分钟线数据管理（纯读写 + 可选的数据
 """
 import pandas as pd
 import sqlite3
-from typing import Optional, TYPE_CHECKING
+from datetime import datetime, timedelta
+from typing import Optional, TYPE_CHECKING, List
 from pathlib import Path
 
 from .cache_policy import CachePolicy
@@ -428,6 +429,43 @@ class KlineManager:
             return 0
         finally:
             conn.close()
+
+    # ========== 更新方法 ==========
+
+    def update_recent_data(self, symbols: List[str], days: int = 10) -> int:
+        """
+        更新指定股票列表最近N天数据。
+
+        逻辑：
+        1. 先从数据库读取范围数据
+        2. 完整则跳过
+        3. 不完整则从在线源拉取并写回
+        """
+        end_date = datetime.now().strftime("%Y-%m-%d")
+        start_date = (datetime.now() - timedelta(days=days * 3)).strftime("%Y-%m-%d")
+
+        updated_count = 0
+        for symbol in symbols:
+            try:
+                existing_df = self.get_daily_kline(symbol, start_date, end_date)
+                if CachePolicy.check_data_complete(existing_df, start_date, end_date):
+                    latest_date = existing_df["date"].max() if not existing_df.empty else "无"
+                    print(f"  {symbol} 数据库已有最新数据 ({len(existing_df)} 条，最新: {latest_date})，跳过更新")
+                    continue
+
+                print(f"  {symbol} 数据库数据不完整 ({len(existing_df)} 条)，从在线源获取...")
+                df_online = self.data_source.get_daily_kline(symbol, start_date, end_date)
+                if not df_online.empty:
+                    self.save_daily_kline(df_online)
+                    updated_count += 1
+                    print(f"  已更新 {symbol} 最新数据 ({len(df_online)} 条)")
+                else:
+                    print(f"  {symbol} 未获取到最新数据")
+            except Exception as exc:
+                print(f"  更新 {symbol} 失败: {exc}")
+
+        print(f"数据更新完成: {updated_count}/{len(symbols)} 只股票从在线源更新")
+        return updated_count
 
 
 if __name__ == "__main__":

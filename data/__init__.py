@@ -6,6 +6,7 @@
 - KlineManager: 日线/分钟线数据管理
 - FactorManager: 因子数据管理
 - FinancialDataManager: 财务数据管理
+- MarketDataService: 市场数据服务（股票列表、分钟线、指数）
 - CachePolicy: 缓存策略（完整性检查）
 - DataProvider: 数据提供者（分离数据获取策略）
 """
@@ -16,7 +17,6 @@ from .cache_policy import CachePolicy
 from .factor_data import FactorData
 from .data_sources import (
     MultiDataSource,
-    AkshareDataSource,
     BaostockDataSource,
     EastmoneyDataSource,
     CSVDataSource,
@@ -32,6 +32,7 @@ from .data_provider import (
 from .financial_data_source import FinancialDataSource
 from .financial_data_saver import FinancialDataSaver
 from .financial_data_manager import FinancialDataManager
+from .market_data_service import MarketDataService
 
 __all__ = [
     # 核心类
@@ -42,7 +43,6 @@ __all__ = [
     'FactorData',
     # 数据源
     'MultiDataSource',
-    'AkshareDataSource',
     'BaostockDataSource',
     'EastmoneyDataSource',
     'CSVDataSource',
@@ -57,4 +57,5 @@ __all__ = [
     'FinancialDataSource',
     'FinancialDataSaver',
     'FinancialDataManager',
+    'MarketDataService',
 ]

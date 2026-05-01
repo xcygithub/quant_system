@@ -8,6 +8,7 @@ import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
+import atexit
 
 from data.data_manager import DataManager
 from portfolio.watchlist import WatchlistManager
@@ -77,6 +78,7 @@ st.markdown("""
 def get_data_manager():
     manager = DataManager()
     print(f"[CONFIG] 当前数据库路径: {manager.db_path}")
+    atexit.register(manager.close)
     return manager
 
 dm = get_data_manager()

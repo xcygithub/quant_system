@@ -56,6 +56,13 @@ class QuantSystem:
         )
         
         self.results = {}
+
+    def close(self):
+        """释放系统持有的外部资源。"""
+        try:
+            self.data_manager.close()
+        except Exception:
+            pass
     
     def run_backtest(
         self,
@@ -481,6 +488,7 @@ def demo():
     print("\n" + "="*70)
     print("✅ 演示完成！")
     print("="*70)
+    system.close()
 
 
 if __name__ == "__main__":

@@ -34,7 +34,7 @@
 │                           数据层 (Data)                               │
 │  ┌───────────────┐    ┌────────────┴───────────┐   ┌─────────────┐ │
 │  │  DataManager │◄───│    MultiDataSource    │───►│  Baostock  │ │
-│  │  统一数据入口│    │     多数据源封装      │   │   Akshare  │ │
+│  │  统一数据入口│    │     多数据源封装      │   │  Eastmoney │ │
 │  ├───────────────┤    └───────────────────────┘   └─────────────┘ │
 │  │  SQLite DB   │                                            │
 │  │ quant_data   │  ┌─────────────┐  ┌─────────────────────┐    │
@@ -57,7 +57,7 @@
 | **因子管理** | `factor_manager.py` | 因子数据读写、IC统计管理 |
 | **财务数据管理** | `financial_data_manager.py` | Baostock财务数据获取、批量更新、估值数据 |
 | **财务数据源** | `financial_data_source.py` | Baostock API封装（7种报表类型），内置限流控制（每秒1次） |
-| **多数据源** | `data_sources.py` | Baostock/Akshare/Eastmoney/CSV统一封装 |
+| **多数据源** | `data_sources.py` | Baostock/Eastmoney/CSV统一封装 |
 | **数据提供者** | `data_provider.py` | DataProvider模式（CacheOnly/Online/Backtest） |
 | **技术指标** | `factor_data.py` | 30+技术指标计算（趋势类：SMA/EMA/MACD/BB；动量类：RSI/KDJ/CCI；波动率：ATR；成交量：OBV/VWAP等） |
 | **缓存策略** | `cache_policy.py` | 数据完整性检查逻辑 |
@@ -211,6 +211,7 @@ quant_system/
 │   ├── financial_data_manager.py  # 财务数据管理
 │   ├── financial_data_source.py  # Baostock API封装
 │   ├── data_sources.py       # 多数据源封装
+│   ├── market_data_service.py # 市场数据服务（股票列表/指数/分钟线）
 │   ├── factor_data.py        # 技术指标计算（30+指标）
 │   ├── cache_policy.py       # 缓存策略
 │   └── watchlist.json       # 自选股存储
@@ -248,6 +249,10 @@ quant_system/
 │   ├── __init__.py
 │   ├── app.py                # Streamlit主应用（7标签页）
 │   ├── factor_backtest_page.py   # 多因子回测专用页面
+│   ├── services/
+│   │   ├── backtest_service.py        # 回测执行服务
+│   │   ├── backtest_presenter.py      # 回测结果展示服务
+│   │   └── backtest_params_service.py # 回测参数构建与校验
 │   └── pages/
 │       └── data_management.py   # 数据管理页面
 │
@@ -265,6 +270,8 @@ quant_system/
 │   ├── test_factor_display.py           # 因子展示测试
 │   ├── test_trade_details_fix.py       # 交易明细修复测试
 │   └── test_web_backtest.py            # Web回测测试
+│   ├── test_services_phase4.py         # 服务层回测测试
+│   └── test_config_paths_phase4.py     # 配置路径一致性测试
 │
 ├── docs/                       # 设计文档
 │   ├── architecture_analysis.md      # 架构分析
@@ -291,7 +298,7 @@ quant_system/
 |------|------|
 | **语言** | Python 3.8+ |
 | **数据处理** | pandas, numpy |
-| **数据获取** | akshare, baostock |
+| **数据获取** | baostock, eastmoney |
 | **技术指标** | pandas-ta, scipy |
 | **可视化** | matplotlib, plotly, seaborn |
 | **Web框架** | Streamlit |
@@ -375,7 +382,6 @@ optimization = system.optimize_parameters(
 | 数据源 | 说明 | 格式转换 |
 |--------|------|----------|
 | **Baostock** | 主要数据源，支持日线、财务数据 | 000001.SH → sh.000001 |
-| **Akshare** | 补充数据源 | 直接使用 |
 | **CSV** | 本地数据文件 | - |
 
 **数据库路径（默认）**：`quant_system/quant_data.db`
@@ -425,6 +431,15 @@ optimization = system.optimize_parameters(
 - [ ] 日志系统
 - [ ] 实盘交易接口
 - [ ] 技术指标库完善（KDJ、布林带）
+
+---
+
+## 八、重构进展（2026-05）
+
+- **阶段1（入口与配置）**：统一数据库路径为 `config.DATABASE_PATH`，启动时打印实际生效路径。
+- **阶段2（Web服务层）**：`web/app.py` 回测执行链已拆分到 `web/services/`。
+- **阶段3（DataManager收敛）**：市场数据能力下沉到 `MarketDataService`，近期更新逻辑下沉到 `KlineManager`。
+- **阶段4（测试与文档）**：新增服务层测试与配置路径测试，文档已同步。
 
 ---
 
