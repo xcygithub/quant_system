@@ -131,13 +131,10 @@ def init_factor_metadata(db_path: str = None):
 
         # 现金流因子（现金流优良买入）
         ('cash_to_profit', 'cashflow', 'positive', '经营现金流/净利润', 'oper_cash_flow / net_profit'),
-        ('fcf', 'cashflow', 'positive', '自由现金流', 'oper_cash_flow - capex'),
-        ('cash_yield', 'cashflow', 'positive', '现金市值比', 'oper_cash_flow / market_cap'),
 
         # 衍生因子
-        ('pb_roe', 'derived', 'neutral', 'PB/ROE', 'PB / ROE'),
-        ('pe_growth', 'derived', 'negative', 'PE/增长率', 'PE / profit_growth'),
-        ('altman_z', 'derived', 'positive', 'Altman Z指数', '1.2*X1 + 1.4*X2 + 3.3*X3 + 0.6*X4 + 1.0*X5'),
+        ('pb_roe_roe', 'derived', 'negative', 'PB/ROE/ROE', 'PB / ((ROE*100) * (ROE*100))'),
+        ('pe_roe', 'derived', 'negative', 'PE/ROE', 'PE / (ROE*100)'),
     ]
 
     conn = sqlite3.connect(db_path)
@@ -150,6 +147,16 @@ def init_factor_metadata(db_path: str = None):
             (factor_name, factor_category, factor_direction, description, formula)
             VALUES (?, ?, ?, ?, ?)
         ''', (factor_name, category, direction, description, formula))
+        cursor.execute('''
+            UPDATE factor_metadata
+            SET factor_category = ?, factor_direction = ?, description = ?, formula = ?
+            WHERE factor_name = ?
+        ''', (category, direction, description, formula, factor_name))
+
+    # 清理已废弃的估算型因子
+    cursor.execute(
+        "DELETE FROM factor_metadata WHERE factor_name IN ('fcf', 'cash_yield', 'pb_roe', 'pe_growth', 'altman_z')"
+    )
 
     conn.commit()
     cursor.execute('SELECT COUNT(*) FROM factor_metadata')

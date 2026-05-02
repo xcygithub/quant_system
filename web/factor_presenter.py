@@ -22,7 +22,7 @@ class FactorPresenter:
     """
 
     # 因子中文名称映射
-    REMOVED_FACTORS = set()
+    REMOVED_FACTORS = {'fcf', 'cash_yield', 'pb_roe', 'pe_growth', 'altman_z'}
 
     FACTOR_NAMES_CN = {
         # 估值因子
@@ -46,6 +46,7 @@ class FactorPresenter:
         'liqa_share': '流通股本(liqaShare)',
         'asset_turnover': '资产周转率',
         # 成长因子
+        'revenue_growth': '营收增长率',
         'profit_growth': '利润增长率',
         'equity_growth': '净资产增长率',
         'profit_cagr': '净利润复合增长率',
@@ -59,9 +60,8 @@ class FactorPresenter:
         'fcf': '自由现金流',
         'cash_yield': '现金市值比',
         # 衍生
-        'pb_roe': 'PB/ROE',
-        'pe_growth': 'PE/增长率',
-        'altman_z': 'Altman Z指数',
+        'pb_roe_roe': 'PB/ROE/ROE',
+        'pe_roe': 'PE/ROE',
     }
 
     # 因子方向说明

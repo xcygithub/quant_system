@@ -65,8 +65,6 @@ class FundamentalFactors:
 
         # 现金流因子（现金流优良买入）
         'cash_to_profit': {'category': 'cashflow', 'direction': 'positive', 'description': '经营现金流/净利润'},
-        'fcf': {'category': 'cashflow', 'direction': 'positive', 'description': '自由现金流'},
-        'cash_yield': {'category': 'cashflow', 'direction': 'positive', 'description': '现金市值比'},
 
         # 杜邦分析因子
         'asset_turnover': {'category': 'profitability', 'direction': 'positive', 'description': '资产周转率'},
@@ -337,37 +335,9 @@ class FundamentalFactors:
         pcf = valuation.get('pcf')
         market_cap = valuation.get('market_cap')
 
-        # EPS（从利润表计算）
-        eps = 0.0
-        if profit is not None and not profit.empty:
-            try:
-                net_profit = self._get_latest_value(profit, 'net_profit', 4)
-                # 需要总股本，这里用估值表的
-                if valuation and valuation.get('total_shares'):
-                    total_shares = float(valuation['total_shares'])
-                    if total_shares > 0:
-                        eps = net_profit / total_shares
-            except:
-                pass
-
-        # 如果有价格但没有估值数据，尝试从利润表计算
-        if price > 0:
-            if eps == 0.0 and profit is not None:
-                try:
-                    net_profit_ttm = self._get_latest_value(profit, 'net_profit', 4)
-                    if valuation and valuation.get('total_shares'):
-                        total_shares = float(valuation['total_shares'])
-                        if total_shares > 0:
-                            eps = net_profit_ttm / total_shares
-                except:
-                    pass
-
-            # 用价格和EPS计算PE
-            if pe is None and eps > 0:
-                pe = price / eps
-
         factors['pe'] = float(pe) if pe and not np.isnan(float(pe)) else 0.0
-        factors['pe_ttm'] = factors['pe']
+        pe_ttm = valuation.get('pe_ttm')
+        factors['pe_ttm'] = float(pe_ttm) if pe_ttm and not np.isnan(float(pe_ttm)) else factors['pe']
         factors['pb'] = float(pb) if pb and not np.isnan(float(pb)) else 0.0
         factors['ps'] = float(ps) if ps and not np.isnan(float(ps)) else 0.0
         factors['pcf'] = float(pcf) if pcf and not np.isnan(float(pcf)) else 0.0
@@ -577,15 +547,14 @@ class FundamentalFactors:
             valuation = {}
 
         if not cash_flow.empty:
-            oper_cf = self._get_latest_value(cash_flow, 'oper_cash_flow', 4)
             cfo_to_np = self._get_latest_value(cash_flow, 'cfo_to_np', 4) if 'cfo_to_np' in cash_flow.columns else 0.0
-            cfo_to_or = self._get_latest_value(cash_flow, 'cfo_to_or', 4) if 'cfo_to_or' in cash_flow.columns else 0.0
 
             # 经营现金流/净利润（优先使用接口直接返回的 CFOToNP 比率）
             if cfo_to_np and cfo_to_np != 0:
                 factors['cash_to_profit'] = cfo_to_np
             else:
                 try:
+                    oper_cf = self._get_latest_value(cash_flow, 'oper_cash_flow', 4)
                     net_profit = self._get_latest_value(profit, 'net_profit', 4)
                     if net_profit and net_profit > 0:
                         factors['cash_to_profit'] = oper_cf / net_profit
@@ -593,47 +562,8 @@ class FundamentalFactors:
                         factors['cash_to_profit'] = 0.0
                 except:
                     factors['cash_to_profit'] = 0.0
-
-            # 自由现金流（简化）
-            # 如果接口没有返回绝对现金流，则用 CFOToOR * 最近非零主营业务收入估算经营现金流
-            if oper_cf and oper_cf != 0:
-                factors['fcf'] = oper_cf
-            else:
-                revenue = self._get_latest_non_zero(profit, 'business_income') if not profit.empty else 0.0
-                factors['fcf'] = cfo_to_or * revenue if (cfo_to_or and revenue) else 0.0
         else:
             factors['cash_to_profit'] = 0.0
-            factors['fcf'] = 0.0
-
-        # 现金市值比
-        market_cap = 0.0
-        if valuation:
-            market_cap = float(valuation.get('market_cap', 0) or 0)
-
-            # 部分估值源无 market_cap，尝试用 close * total_share 估算
-            if market_cap <= 0:
-                close = float(valuation.get('close', 0) or 0)
-                total_share = self._get_latest_non_zero(profit, 'total_share') if not profit.empty else 0.0
-                if close > 0 and total_share > 0:
-                    market_cap = close * total_share
-
-            # 再兜底：market_cap = pe_ttm * net_profit
-            if market_cap <= 0:
-                pe_ttm = float(valuation.get('pe_ttm', 0) or 0)
-                net_profit = self._get_latest_non_zero(profit, 'net_profit') if not profit.empty else 0.0
-                if pe_ttm > 0 and net_profit > 0:
-                    market_cap = pe_ttm * net_profit
-
-        if market_cap > 0:
-            try:
-                if factors['fcf'] != 0:
-                    factors['cash_yield'] = factors['fcf'] / market_cap
-                else:
-                    factors['cash_yield'] = 0.0
-            except:
-                factors['cash_yield'] = 0.0
-        else:
-            factors['cash_yield'] = 0.0
 
         return factors
 
@@ -642,43 +572,19 @@ class FundamentalFactors:
         """计算衍生因子"""
         derived = {}
 
-        # PB_ROE = PB / ROE（成长价值因子）
+        # PB/ROE/ROE
         if factors.get('roe') and factors['roe'] > 0 and factors.get('pb'):
-            derived['pb_roe'] = factors['pb'] / factors['roe']
+            roe_pct = factors['roe'] * 100.0
+            derived['pb_roe_roe'] = factors['pb'] / (roe_pct * roe_pct)
         else:
-            derived['pb_roe'] = 0.0
+            derived['pb_roe_roe'] = 0.0
 
-        # PE_Growth = PE / 利润增长率（PEG的倒数）
-        if factors.get('profit_growth') and factors['profit_growth'] > -0.99:
-            derived['pe_growth'] = factors.get('pe', 0) / (factors['profit_growth'] + 1)
+        # PE/ROE
+        if factors.get('roe') and factors['roe'] > 0 and factors.get('pe'):
+            roe_pct = factors['roe'] * 100.0
+            derived['pe_roe'] = factors['pe'] / roe_pct
         else:
-            derived['pe_growth'] = 0.0
-
-        # Altman Z-Score（简化版）
-        # Z = 1.2*X1 + 1.4*X2 + 3.3*X3 + 0.6*X4 + 1.0*X5
-        # X1 = 营运资本/总资产 = (current_assets - current_liabilities) / total_assets
-        # X2 = 留存收益/总资产
-        # X3 = EBIT/总资产（ROA 已移除，简化置 0）
-        # X4 = 股权市值/总负债
-        # X5 = 销售收入/总资产 = asset_turnover
-        try:
-            if dupont is not None and not dupont.empty:
-                asset_turnover = self._get_latest_value(dupont, 'asset_turnover', 4)
-            else:
-                asset_turnover = factors.get('asset_turnover', 0)
-
-            equity_multiplier = factors.get('equity_multiplier', 0)
-            debt_ratio = factors.get('debt_ratio', 0)
-
-            x1 = 0  # 简化
-            x2 = 0  # 简化
-            x3 = 0
-            x4 = equity_multiplier if debt_ratio > 0 else 0
-            x5 = asset_turnover
-
-            derived['altman_z'] = 1.2*x1 + 1.4*x2 + 3.3*x3 + 0.6*x4 + 1.0*x5
-        except:
-            derived['altman_z'] = 0.0
+            derived['pe_roe'] = 0.0
 
         return derived
 

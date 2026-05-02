@@ -265,8 +265,8 @@ class FactorSignalConfig:
         'roe', 'roa', 'roic', 'gross_margin', 'net_margin',
         'revenue_growth', 'profit_growth', 'equity_growth',
         'momentum_5', 'momentum_20', 'momentum_60',
-        'cash_to_profit', 'fcf', 'cash_yield',
-        'pb_roe', 'pe_growth', 'altman_z',
+        'cash_to_profit',
+        'pb_roe_roe', 'pe_roe',
         'current_ratio', 'quick_ratio'
     }
 
