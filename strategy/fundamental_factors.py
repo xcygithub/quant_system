@@ -23,8 +23,8 @@ class FundamentalFactors:
 
     从数据库财务数据计算各类基本面因子：
     - 估值因子：PE、PB、PS、PCF
-    - 盈利因子：ROE、ROA、毛利率、净利率
-    - 成长因子：营收增长率、利润增长率
+    - 盈利因子：ROE、毛利率、净利率
+    - 成长因子：利润增长率、净资产增长率
     - 财务结构因子：资产负债率、流动比率
     - 现金流因子：经营现金流/净利润
     """
@@ -41,10 +41,16 @@ class FundamentalFactors:
         # 盈利因子（高盈利买入）
         'roe': {'category': 'profitability', 'direction': 'positive', 'description': '净资产收益率'},
         'roe_avg': {'category': 'profitability', 'direction': 'positive', 'description': '平均净资产收益率'},
-        'roa': {'category': 'profitability', 'direction': 'positive', 'description': '资产收益率'},
         'gross_margin': {'category': 'profitability', 'direction': 'positive', 'description': '毛利率'},
         'net_margin': {'category': 'profitability', 'direction': 'positive', 'description': '净利率'},
+        'np_margin': {'category': 'profitability', 'direction': 'positive', 'description': '销售净利率'},
+        'gp_margin': {'category': 'profitability', 'direction': 'positive', 'description': '销售毛利率'},
         'eps_ttm': {'category': 'profitability', 'direction': 'positive', 'description': '每股收益TTM'},
+        'roa': {'category': 'profitability', 'direction': 'positive', 'description': '总资产收益率'},
+        'net_profit': {'category': 'profitability', 'direction': 'positive', 'description': '净利润'},
+        'mb_revenue': {'category': 'profitability', 'direction': 'positive', 'description': '主营业务收入'},
+        'total_share': {'category': 'profitability', 'direction': 'neutral', 'description': '总股本'},
+        'liqa_share': {'category': 'profitability', 'direction': 'neutral', 'description': '流通股本'},
 
         # 成长因子（高成长买入）
         'revenue_growth': {'category': 'growth', 'direction': 'positive', 'description': '营收增长率'},
@@ -76,6 +82,92 @@ class FundamentalFactors:
         """
         self.fdm = FinancialDataManager(db_path)
 
+    def _get_latest_report_date_from_db(self, trade_date: str, symbol: str = None) -> Optional[str]:
+        """
+        从数据库中获取查询日期之前最新可用的财报截止日期。
+
+        Args:
+            trade_date: 查询日期，格式 YYYY-MM-DD
+            symbol: 股票代码，None 表示不限制股票
+
+        Returns:
+            财报截止日期或 None
+        """
+        conn = sqlite3.connect(self.fdm.db_path)
+        cursor = conn.cursor()
+        tables = ['profit_data', 'balance_data', 'cash_flow_data', 'dupont_data']
+        latest_dates: List[str] = []
+        try:
+            for table_name in tables:
+                if symbol:
+                    query = f'''
+                        SELECT MAX(report_date) FROM {table_name}
+                        WHERE symbol = ? AND report_date <= ?
+                    '''
+                    row = cursor.execute(query, (symbol, trade_date)).fetchone()
+                else:
+                    query = f'''
+                        SELECT MAX(report_date) FROM {table_name}
+                        WHERE report_date <= ?
+                    '''
+                    row = cursor.execute(query, (trade_date,)).fetchone()
+                if row and row[0]:
+                    latest_dates.append(str(row[0]))
+        finally:
+            conn.close()
+
+        if not latest_dates:
+            return None
+        return max(latest_dates)
+
+    def get_report_date(self, trade_date: str, symbol: str = None, lag_days: int = 45) -> str:
+        """
+        根据查询日期返回最近可用财报截止日期。
+
+        Args:
+            trade_date: 查询日期，格式 YYYY-MM-DD
+            symbol: 股票代码，优先按该股票在数据库中的可用财报日期判断
+            lag_days: 财报可用滞后天数，默认 45 天
+
+        Returns:
+            财报截止日期，格式 YYYY-MM-DD
+        """
+        # 1) 优先使用数据库里已落地的财报日期（更贴近真实数据可用性）
+        latest_report_date = self._get_latest_report_date_from_db(trade_date, symbol)
+        if latest_report_date:
+            return latest_report_date
+
+        # 2) 若该股票无数据，再尝试全市场维度的可用财报日期
+        if symbol:
+            latest_report_date = self._get_latest_report_date_from_db(trade_date, None)
+            if latest_report_date:
+                return latest_report_date
+
+        # 3) 最后兜底：使用固定滞后规则推断
+        trade_dt = pd.to_datetime(trade_date)
+        earliest_year = 2015
+        latest_year = trade_dt.year + 1
+        report_dates: List[pd.Timestamp] = []
+
+        for year in range(earliest_year, latest_year + 1):
+            report_dates.extend([
+                pd.Timestamp(f"{year}-03-31"),
+                pd.Timestamp(f"{year}-06-30"),
+                pd.Timestamp(f"{year}-09-30"),
+                pd.Timestamp(f"{year}-12-31"),
+            ])
+
+        available_reports = [
+            report_dt for report_dt in report_dates
+            if report_dt + pd.Timedelta(days=lag_days) <= trade_dt
+        ]
+
+        if not available_reports:
+            # 数据不足时兜底到最早可用季度，避免返回未来日期
+            return f"{earliest_year}-03-31"
+
+        return max(available_reports).strftime('%Y-%m-%d')
+
     def calculate_all_factors(self, symbol: str, trade_date: str = None) -> Dict[str, float]:
         """
         计算某只股票的所有基本面因子
@@ -89,15 +181,17 @@ class FundamentalFactors:
         """
         if trade_date is None:
             trade_date = datetime.now().strftime('%Y-%m-%d')
+        report_date = self.get_report_date(trade_date, symbol)
 
         factors = {}
 
-        # 1. 获取财务数据（按报告期降序，取最新可用）
-        profit = self.fdm.get_profit(symbol)
-        balance = self.fdm.get_balance(symbol)
-        cash_flow = self.fdm.get_cash_flow(symbol)
-        dupont = self.fdm.get_dupont(symbol)
-        valuation = self.fdm.get_valuation(symbol)
+        # 1. 获取财务数据（只使用指定财报截止日期及之前的数据）
+        profit = self.fdm.get_financial_data(symbol, data_type='profit', end_date=report_date)
+        balance = self.fdm.get_financial_data(symbol, data_type='balance', end_date=report_date)
+        cash_flow = self.fdm.get_financial_data(symbol, data_type='cash', end_date=report_date)
+        dupont = self.fdm.get_financial_data(symbol, data_type='dupont', end_date=report_date)
+        growth = self.fdm.get_financial_data(symbol, data_type='growth', end_date=report_date)
+        valuation = self.fdm.get_valuation(symbol, trade_date)
 
         # 2. 获取最新价格（用于计算估值因子）
         price = self._get_price(symbol, trade_date)
@@ -105,7 +199,7 @@ class FundamentalFactors:
         # 3. 计算各类因子
         factors.update(self._calc_valuation_factors(price, valuation, profit))
         factors.update(self._calc_profitability_factors(profit, balance, dupont))
-        factors.update(self._calc_growth_factors(profit, balance))
+        factors.update(self._calc_growth_factors(profit, balance, growth))
         factors.update(self._calc_structure_factors(balance))
         factors.update(self._calc_cashflow_factors(cash_flow, profit, valuation))
 
@@ -177,19 +271,55 @@ class FundamentalFactors:
         if df.empty or col not in df.columns:
             return 0.0
 
-        values = df[col].dropna().head(4)  # 最近4期
-        if len(values) < 2:
+        # 严格按“去年同期”计算，不再误用“上一期”。
+        # 若最新一期字段为空/为0，则向前寻找最近可计算的季度。
+        if 'report_date' not in df.columns:
             return 0.0
 
         try:
-            current = float(values.iloc[0])  # 最新一期
-            prior = float(values.iloc[1])   # 去年同期
+            work_df = df.copy()
+            work_df['report_date'] = pd.to_datetime(work_df['report_date'], errors='coerce')
+            work_df = work_df.dropna(subset=['report_date']).sort_values('report_date', ascending=False)
+            if work_df.empty:
+                return 0.0
 
-            if prior != 0 and not np.isnan(prior):
-                return (current / prior) - 1.0
+            for _, current_row in work_df.iterrows():
+                current = float(current_row[col]) if pd.notna(current_row[col]) else 0.0
+                if current == 0 or np.isnan(current):
+                    continue
+
+                current_date = current_row['report_date']
+                prior_date = current_date - pd.DateOffset(years=1)
+                prior_row = work_df[work_df['report_date'] == prior_date]
+                if prior_row.empty:
+                    continue
+                prior = float(prior_row.iloc[0][col]) if pd.notna(prior_row.iloc[0][col]) else 0.0
+
+                if prior != 0 and not np.isnan(prior):
+                    return (current / prior) - 1.0
         except:
             pass
 
+        return 0.0
+
+    def _get_latest_non_zero(self, df: pd.DataFrame, col: str) -> float:
+        """
+        获取最近一期非零值（按 report_date 倒序）。
+        """
+        if df.empty or col not in df.columns:
+            return 0.0
+        try:
+            work_df = df.copy()
+            if 'report_date' in work_df.columns:
+                work_df['report_date'] = pd.to_datetime(work_df['report_date'], errors='coerce')
+                work_df = work_df.dropna(subset=['report_date']).sort_values('report_date', ascending=False)
+            series = pd.to_numeric(work_df[col], errors='coerce').dropna()
+            for value in series:
+                value = float(value)
+                if value != 0 and not np.isnan(value):
+                    return value
+        except:
+            pass
         return 0.0
 
     def _calc_valuation_factors(self, price: float, valuation: Dict = None,
@@ -258,9 +388,18 @@ class FundamentalFactors:
             dupont = pd.DataFrame()
 
         # ROE（净资产收益率）
+        dupont_roe = 0.0
         if not dupont.empty and 'roe' in dupont.columns:
-            factors['roe'] = self._get_latest_value(dupont, 'roe', 4)
-            factors['roe_avg'] = self._get_latest_value(dupont, 'roe', 4)
+            dupont_roe = self._get_latest_value(dupont, 'roe', 4)
+
+        # 杜邦 ROE 为 0 时，回退利润表 ROE，避免“有数据却显示无数据”
+        if dupont_roe != 0:
+            factors['roe'] = dupont_roe
+            factors['roe_avg'] = dupont_roe
+        elif not profit.empty and 'roe' in profit.columns:
+            roe_profit = self._get_latest_value(profit, 'roe', 4)
+            factors['roe'] = roe_profit
+            factors['roe_avg'] = roe_profit
         elif not profit.empty and not balance.empty:
             try:
                 net_profit = self._get_latest_value(profit, 'net_profit', 4)
@@ -275,29 +414,36 @@ class FundamentalFactors:
             factors['roe'] = 0.0
             factors['roe_avg'] = 0.0
 
-        # ROA（资产收益率）
-        if not profit.empty and not balance.empty:
-            try:
-                net_profit = self._get_latest_value(profit, 'net_profit', 4)
-                total_assets = self._get_latest_value(balance, 'total_assets', 4)
-                if total_assets and total_assets > 0:
-                    factors['roa'] = net_profit / total_assets
-                else:
-                    factors['roa'] = 0.0
-            except:
-                factors['roa'] = 0.0
-        else:
-            factors['roa'] = 0.0
-
         # 毛利率
         if not profit.empty:
             factors['gross_margin'] = self._get_latest_value(profit, 'gross_profit_rate', 4)
             factors['net_margin'] = self._get_latest_value(profit, 'net_profit_ratio', 4)
+            # 与 Baostock 字段命名保持一致的别名
+            factors['np_margin'] = factors['net_margin']
+            factors['gp_margin'] = factors['gross_margin']
             factors['eps_ttm'] = self._get_latest_value(profit, 'eps', 4)
+            factors['net_profit'] = self._get_latest_value(profit, 'net_profit', 4)
+            factors['mb_revenue'] = self._get_latest_value(profit, 'business_income', 4)
+            factors['total_share'] = self._get_latest_value(profit, 'total_share', 1)
+            factors['liqa_share'] = self._get_latest_value(profit, 'liqa_share', 1)
+
+            # ROA = 净利润 / 总资产
+            total_assets = self._get_latest_value(balance, 'total_assets', 4) if not balance.empty else 0.0
+            if total_assets > 0:
+                factors['roa'] = self._get_latest_value(profit, 'net_profit', 4) / total_assets
+            else:
+                factors['roa'] = 0.0
         else:
             factors['gross_margin'] = 0.0
             factors['net_margin'] = 0.0
+            factors['np_margin'] = 0.0
+            factors['gp_margin'] = 0.0
             factors['eps_ttm'] = 0.0
+            factors['roa'] = 0.0
+            factors['net_profit'] = 0.0
+            factors['mb_revenue'] = 0.0
+            factors['total_share'] = 0.0
+            factors['liqa_share'] = 0.0
 
         # 资产周转率（杜邦分析）
         if not dupont.empty and 'asset_turnover' in dupont.columns:
@@ -308,7 +454,8 @@ class FundamentalFactors:
         return factors
 
     def _calc_growth_factors(self, profit: pd.DataFrame = None,
-                            balance: pd.DataFrame = None) -> Dict[str, float]:
+                            balance: pd.DataFrame = None,
+                            growth: pd.DataFrame = None) -> Dict[str, float]:
         """计算成长因子"""
         factors = {}
 
@@ -316,21 +463,30 @@ class FundamentalFactors:
             profit = pd.DataFrame()
         if balance is None:
             balance = pd.DataFrame()
+        if growth is None:
+            growth = pd.DataFrame()
 
-        # 营收增长率
-        if not profit.empty and 'business_income' in profit.columns:
-            factors['revenue_growth'] = self._get_yoy_growth(profit, 'business_income')
-        else:
-            factors['revenue_growth'] = 0.0
-
-        # 利润增长率
-        if not profit.empty and 'net_profit' in profit.columns:
+        # 利润增长率（优先使用 growth_data 的净利润同比，取最新可用）
+        if not growth.empty and 'profit_grow' in growth.columns:
+            factors['profit_growth'] = self._get_latest_non_zero(growth, 'profit_grow')
+        elif not profit.empty and 'net_profit' in profit.columns:
             factors['profit_growth'] = self._get_yoy_growth(profit, 'net_profit')
         else:
             factors['profit_growth'] = 0.0
 
-        # 净资产增长率
-        if not balance.empty and 'total_equity' in balance.columns:
+        # 营收增长率（优先使用利润表营业收入同比）
+        if not profit.empty and 'business_income' in profit.columns:
+            factors['revenue_growth'] = self._get_yoy_growth(profit, 'business_income')
+        elif not growth.empty and 'profit_grow_ratio' in growth.columns:
+            # 保底：无收入字段时，用 growth_data 的辅助同比字段
+            factors['revenue_growth'] = self._get_latest_non_zero(growth, 'profit_grow_ratio')
+        else:
+            factors['revenue_growth'] = 0.0
+
+        # 净资产增长率（优先使用 growth_data 的净资产同比，取最新可用）
+        if not growth.empty and 'asset_to_income' in growth.columns:
+            factors['equity_growth'] = self._get_latest_non_zero(growth, 'asset_to_income')
+        elif not balance.empty and 'total_equity' in balance.columns:
             factors['equity_growth'] = self._get_yoy_growth(balance, 'total_equity')
         else:
             factors['equity_growth'] = 0.0
@@ -421,28 +577,56 @@ class FundamentalFactors:
             valuation = {}
 
         if not cash_flow.empty:
-            # 经营现金流/净利润（盈利质量）
-            try:
-                oper_cf = self._get_latest_value(cash_flow, 'oper_cash_flow', 4)
-                net_profit = self._get_latest_value(profit, 'net_profit', 4)
-                if net_profit and net_profit > 0:
-                    factors['cash_to_profit'] = oper_cf / net_profit
-                else:
-                    factors['cash_to_profit'] = 0.0
-            except:
-                factors['cash_to_profit'] = 0.0
+            oper_cf = self._get_latest_value(cash_flow, 'oper_cash_flow', 4)
+            cfo_to_np = self._get_latest_value(cash_flow, 'cfo_to_np', 4) if 'cfo_to_np' in cash_flow.columns else 0.0
+            cfo_to_or = self._get_latest_value(cash_flow, 'cfo_to_or', 4) if 'cfo_to_or' in cash_flow.columns else 0.0
 
-            # 自由现金流（简化：经营现金流）
-            factors['fcf'] = self._get_latest_value(cash_flow, 'oper_cash_flow', 4)
+            # 经营现金流/净利润（优先使用接口直接返回的 CFOToNP 比率）
+            if cfo_to_np and cfo_to_np != 0:
+                factors['cash_to_profit'] = cfo_to_np
+            else:
+                try:
+                    net_profit = self._get_latest_value(profit, 'net_profit', 4)
+                    if net_profit and net_profit > 0:
+                        factors['cash_to_profit'] = oper_cf / net_profit
+                    else:
+                        factors['cash_to_profit'] = 0.0
+                except:
+                    factors['cash_to_profit'] = 0.0
+
+            # 自由现金流（简化）
+            # 如果接口没有返回绝对现金流，则用 CFOToOR * 最近非零主营业务收入估算经营现金流
+            if oper_cf and oper_cf != 0:
+                factors['fcf'] = oper_cf
+            else:
+                revenue = self._get_latest_non_zero(profit, 'business_income') if not profit.empty else 0.0
+                factors['fcf'] = cfo_to_or * revenue if (cfo_to_or and revenue) else 0.0
         else:
             factors['cash_to_profit'] = 0.0
             factors['fcf'] = 0.0
 
         # 现金市值比
-        if valuation and valuation.get('market_cap'):
+        market_cap = 0.0
+        if valuation:
+            market_cap = float(valuation.get('market_cap', 0) or 0)
+
+            # 部分估值源无 market_cap，尝试用 close * total_share 估算
+            if market_cap <= 0:
+                close = float(valuation.get('close', 0) or 0)
+                total_share = self._get_latest_non_zero(profit, 'total_share') if not profit.empty else 0.0
+                if close > 0 and total_share > 0:
+                    market_cap = close * total_share
+
+            # 再兜底：market_cap = pe_ttm * net_profit
+            if market_cap <= 0:
+                pe_ttm = float(valuation.get('pe_ttm', 0) or 0)
+                net_profit = self._get_latest_non_zero(profit, 'net_profit') if not profit.empty else 0.0
+                if pe_ttm > 0 and net_profit > 0:
+                    market_cap = pe_ttm * net_profit
+
+        if market_cap > 0:
             try:
-                market_cap = float(valuation['market_cap'])
-                if market_cap > 0 and factors['fcf'] != 0:
+                if factors['fcf'] != 0:
                     factors['cash_yield'] = factors['fcf'] / market_cap
                 else:
                     factors['cash_yield'] = 0.0
@@ -474,7 +658,7 @@ class FundamentalFactors:
         # Z = 1.2*X1 + 1.4*X2 + 3.3*X3 + 0.6*X4 + 1.0*X5
         # X1 = 营运资本/总资产 = (current_assets - current_liabilities) / total_assets
         # X2 = 留存收益/总资产
-        # X3 = EBIT/总资产 ≈ ROA
+        # X3 = EBIT/总资产（ROA 已移除，简化置 0）
         # X4 = 股权市值/总负债
         # X5 = 销售收入/总资产 = asset_turnover
         try:
@@ -483,13 +667,12 @@ class FundamentalFactors:
             else:
                 asset_turnover = factors.get('asset_turnover', 0)
 
-            roa = factors.get('roa', 0)
             equity_multiplier = factors.get('equity_multiplier', 0)
             debt_ratio = factors.get('debt_ratio', 0)
 
             x1 = 0  # 简化
             x2 = 0  # 简化
-            x3 = roa
+            x3 = 0
             x4 = equity_multiplier if debt_ratio > 0 else 0
             x5 = asset_turnover
 
@@ -683,7 +866,7 @@ if __name__ == "__main__":
     symbols = ['000001.SZ', '600000.SH', '600519.SH']
     panel = ff.get_factor_panel(symbols)
     if not panel.empty:
-        print(panel[['pe', 'pb', 'roe', 'revenue_growth']].head())
+        print(panel[['pe', 'pb', 'roe', 'profit_growth']].head())
 
     ff.close()
     print("\n测试完成")

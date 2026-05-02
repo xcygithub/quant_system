@@ -77,6 +77,12 @@ def _init_factor_session_state():
         st.session_state.factor_calc_results = {}
     if 'factor_last_calc_time' not in st.session_state:
         st.session_state.factor_last_calc_time = None
+    if 'factor_query_date_option' not in st.session_state:
+        st.session_state.factor_query_date_option = "最新"
+    if 'factor_last_query_date' not in st.session_state:
+        st.session_state.factor_last_query_date = None
+    if 'factor_last_report_date' not in st.session_state:
+        st.session_state.factor_last_report_date = None
 
 
 # =============================================================================
@@ -90,6 +96,16 @@ def _render_calc_section(dm: DataManager, wl_manager: WatchlistManager):
     # 获取自选股列表
     watchlist = wl_manager.get_all_stocks()
     watchlist_df = pd.DataFrame(watchlist) if watchlist else pd.DataFrame()
+    date_options = _get_factor_date_options()
+    default_option = st.session_state.factor_query_date_option
+    default_index = date_options.index(default_option) if default_option in date_options else 0
+    selected_date_option = st.selectbox(
+        "计算日期",
+        options=date_options,
+        index=default_index,
+        help="可选择最新（自动映射）或指定财报截止日期"
+    )
+    st.session_state.factor_query_date_option = selected_date_option
 
     # 计算按钮
     col1, col2 = st.columns(2)
@@ -101,7 +117,7 @@ def _render_calc_section(dm: DataManager, wl_manager: WatchlistManager):
                      use_container_width=True):
             if not watchlist_df.empty:
                 with st.spinner("正在计算自选股因子..."):
-                    _calculate_watchlist_factors(watchlist_df, wl_manager)
+                    _calculate_watchlist_factors(watchlist_df, wl_manager, selected_date_option)
                 st.success(f"完成！已计算 {len(watchlist_df)} 只股票")
 
     with col2:
@@ -114,6 +130,11 @@ def _render_calc_section(dm: DataManager, wl_manager: WatchlistManager):
     # 计算进度显示
     if st.session_state.factor_last_calc_time:
         st.caption(f"最后计算时间: {st.session_state.factor_last_calc_time}")
+    if st.session_state.factor_last_query_date and st.session_state.factor_last_report_date:
+        st.caption(
+            f"查询日期: {st.session_state.factor_last_query_date} | "
+            f"实际财报截止日期: {st.session_state.factor_last_report_date}"
+        )
 
     # 计算结果统计
     if st.session_state.factor_calc_results:
@@ -139,10 +160,14 @@ def _render_calc_section(dm: DataManager, wl_manager: WatchlistManager):
 
 
 def _calculate_watchlist_factors(watchlist_df: pd.DataFrame,
-                                  wl_manager: WatchlistManager):
+                                  wl_manager: WatchlistManager,
+                                  date_option: str = "最新"):
     """计算自选股的所有因子"""
     symbols = watchlist_df['symbol'].tolist()
     ff = FundamentalFactors()
+    fp = FactorPresenter()
+    query_date = fp.resolve_trade_date(date_option)
+    report_date = ff.get_report_date(query_date)
     results = {}
 
     # 进度条
@@ -151,7 +176,7 @@ def _calculate_watchlist_factors(watchlist_df: pd.DataFrame,
 
     for i, symbol in enumerate(symbols):
         try:
-            factors = ff.calculate_all_factors(symbol)
+            factors = ff.calculate_all_factors(symbol, query_date)
             # 只保存非零因子
             valid_factors = {k: v for k, v in factors.items() if v != 0}
             results[symbol] = valid_factors
@@ -166,8 +191,7 @@ def _calculate_watchlist_factors(watchlist_df: pd.DataFrame,
                         'factor_value': fvalue
                     })
                 df = pd.DataFrame(rows)
-                trade_date = datetime.now().strftime('%Y-%m-%d')
-                ff.save_factor_values(df, trade_date)
+                ff.save_factor_values(df, report_date)
 
         except Exception as e:
             results[symbol] = {}
@@ -182,7 +206,10 @@ def _calculate_watchlist_factors(watchlist_df: pd.DataFrame,
     # 保存结果到 session state
     st.session_state.factor_calc_results = results
     st.session_state.factor_last_calc_time = datetime.now().strftime("%H:%M:%S")
+    st.session_state.factor_last_query_date = query_date
+    st.session_state.factor_last_report_date = report_date
 
+    fp.close()
     ff.close()
 
 
@@ -198,7 +225,11 @@ def _export_factors_csv():
     for symbol, factors in results.items():
         if not factors:
             continue
-        row = {'股票代码': symbol}
+        row = {
+            '股票代码': symbol,
+            '查询日期': st.session_state.factor_last_query_date,
+            '财报截止日期': st.session_state.factor_last_report_date
+        }
         row.update(factors)
         rows.append(row)
 
@@ -265,11 +296,23 @@ def _render_single_stock_view(dm: DataManager, wl_manager: WatchlistManager):
     if selected_symbol:
         st.session_state.factor_selected_symbol = selected_symbol
 
-    # 计算日期
-    trade_date = datetime.now().strftime('%Y-%m-%d')
-
     # 因子选择
     fp = FactorPresenter()
+    date_options = _get_factor_date_options()
+    default_option = st.session_state.factor_query_date_option
+    default_index = date_options.index(default_option) if default_option in date_options else 0
+    selected_date_option = st.selectbox(
+        "查询日期",
+        options=date_options,
+        index=default_index,
+        help="“最新”会自动映射到当前可用的最近财报截止日"
+    )
+    st.session_state.factor_query_date_option = selected_date_option
+    factor_payload = fp.get_factors_on_date(selected_symbol, selected_date_option)
+    factors_dict = factor_payload['factors']
+    query_date = factor_payload['query_date']
+    report_date = factor_payload['report_date']
+    st.caption(f"查询日期: {query_date} | 实际财报截止日期: {report_date}")
 
     # 获取因子类别
     factor_categories = fp.get_factor_list_by_category()
@@ -305,10 +348,7 @@ def _render_single_stock_view(dm: DataManager, wl_manager: WatchlistManager):
                 with cols[i % 3]:
                     # 计算因子值
                     try:
-                        ff = FundamentalFactors()
-                        factors_dict = ff.calculate_all_factors(selected_symbol, trade_date)
                         value = factors_dict.get(fname, 0)
-                        ff.close()
 
                         formatted = fp.format_factor_value(fname, value)
 
@@ -403,20 +443,37 @@ def _render_multi_stock_ranking_view(dm: DataManager, wl_manager: WatchlistManag
         format_func=lambda x: dict(all_factors).get(x, x)
     )
 
-    # 计算日期
-    trade_date = datetime.now().strftime('%Y-%m-%d')
+    date_options = _get_factor_date_options()
+    default_option = st.session_state.factor_query_date_option
+    default_index = date_options.index(default_option) if default_option in date_options else 0
+    selected_date_option = st.selectbox(
+        "查询日期",
+        options=date_options,
+        index=default_index,
+        help="多股排名会统一使用同一个财报截止日期"
+    )
+    st.session_state.factor_query_date_option = selected_date_option
+    query_date = fp.resolve_trade_date(selected_date_option)
+    report_date = fp.ff.get_report_date(query_date)
+    st.caption(f"查询日期: {query_date} | 实际财报截止日期: {report_date}")
 
     # 计算因子排名
     if st.button("🔍 查询排名", use_container_width=True):
         ranking_df = fp.get_multi_stock_single_factor(
             selected_stocks,
             selected_factor,
-            trade_date
+            query_date
         )
 
         if ranking_df.empty:
             st.warning("没有查询到有效数据")
         else:
+            # 股票代码 -> 代码+中文名
+            symbol_to_name = {
+                row['symbol']: row.get('name', row['symbol'])
+                for _, row in watchlist_df.iterrows()
+            }
+
             # 获取因子信息
             metadata = fp._get_factor_metadata().get(selected_factor, {})
             direction = metadata.get('direction', 'positive')
@@ -424,41 +481,32 @@ def _render_multi_stock_ranking_view(dm: DataManager, wl_manager: WatchlistManag
 
             st.markdown(f"**{factor_name}** 排名 ({'低优' if direction == 'negative' else '高优'})")
 
-            # 显示柱状图
-            fig = go.Figure()
-
-            colors = ['#ff6b6b' if direction == 'positive' else '#51cf66'] * len(ranking_df)
-            fig.add_trace(go.Bar(
-                x=ranking_df['股票代码'],
-                y=ranking_df['因子值'],
-                marker_color=colors,
-                text=[fp.format_factor_value(selected_factor, v) for v in ranking_df['因子值']],
-                textposition='outside'
-            ))
-
-            fig.update_layout(
-                title=dict(
-                    text=f"{factor_name} 排名",
-                    x=0.5
-                ),
-                yaxis_title="因子值",
-                xaxis_title="股票",
-                height=400,
-                showlegend=False
-            )
-
-            st.plotly_chart(fig, use_container_width=True)
-
             # 显示详细表格
             ranking_df_display = ranking_df.copy()
+            ranking_df_display['股票'] = ranking_df_display['股票代码'].apply(
+                lambda s: f"{s} - {symbol_to_name.get(s, s)}"
+            )
+            ranking_df_display['查询日期'] = query_date
+            ranking_df_display['财报截止日期'] = report_date
             ranking_df_display['因子值'] = [
                 fp.format_factor_value(selected_factor, v)
                 for v in ranking_df_display['因子值']
             ]
-            st.dataframe(ranking_df_display, use_container_width=True)
+            st.dataframe(
+                ranking_df_display[['排名', '股票', '因子值', '查询日期', '财报截止日期']],
+                use_container_width=True,
+                hide_index=True
+            )
 
             # 导出按钮
-            csv = ranking_df.to_csv(index=False).encode('utf-8-sig')
+            ranking_export_df = ranking_df.copy()
+            ranking_export_df['股票'] = ranking_export_df['股票代码'].apply(
+                lambda s: f"{s} - {symbol_to_name.get(s, s)}"
+            )
+            ranking_export_df['查询日期'] = query_date
+            ranking_export_df['财报截止日期'] = report_date
+            ranking_export_df = ranking_export_df[['排名', '股票代码', '股票', '因子值', '查询日期', '财报截止日期']]
+            csv = ranking_export_df.to_csv(index=False).encode('utf-8-sig')
             st.download_button(
                 label="📥 导出CSV",
                 data=csv,
@@ -480,3 +528,21 @@ def _get_stock_name_from_symbol(symbol: str, wl_manager: WatchlistManager) -> st
         if stock.get('symbol') == symbol:
             return stock.get('name', symbol)
     return symbol
+
+
+def _get_factor_date_options(quarter_count: int = 12) -> List[str]:
+    """生成因子分析页面的日期选项。"""
+    options = ["最新"]
+    today = pd.Timestamp.today()
+    quarter_ends = pd.date_range(end=today, periods=quarter_count, freq='Q')
+    quarter_labels = {
+        "03-31": "一季报",
+        "06-30": "中报",
+        "09-30": "三季报",
+        "12-31": "年报",
+    }
+    for quarter_end in sorted(quarter_ends, reverse=True):
+        date_str = quarter_end.strftime('%Y-%m-%d')
+        label = quarter_labels.get(quarter_end.strftime('%m-%d'), "财报")
+        options.append(f"{date_str} ({label})")
+    return options

@@ -16,6 +16,7 @@ from portfolio.factor_ic_configurator import FactorICConfigurator
 from portfolio.factor_signal_generator import FactorSignalGenerator
 from data.data_manager import DataManager
 from data.data_provider import CacheOnlyProvider
+from strategy.fundamental_factors import FundamentalFactors
 
 
 # =============================================================================
@@ -25,10 +26,18 @@ from data.data_provider import CacheOnlyProvider
 FACTOR_CATEGORIES = {
     "基本面因子": {
         "roe": "ROE（净资产收益率）",
+        "roe_avg": "净资产收益率(平均)",
         "roa": "ROA（资产收益率）",
         "gross_margin": "毛利率",
         "net_margin": "净利率",
+        "np_margin": "销售净利率(npMargin)",
+        "gp_margin": "销售毛利率(gpMargin)",
         "eps": "EPS（每股收益）",
+        "eps_ttm": "epsTTM（每股收益TTM）",
+        "net_profit": "netProfit（净利润）",
+        "mb_revenue": "MBRevenue（主营业务收入）",
+        "total_share": "totalShare（总股本）",
+        "liqa_share": "liqaShare（流通股本）",
         "revenue_growth": "营收增长率",
         "profit_growth": "利润增长率",
         "asset_turnover": "资产周转率"
@@ -503,42 +512,67 @@ def _prepare_factor_data(stock_data: Dict[str, pd.DataFrame], factor_names: List
         因子数据字典
     """
     factor_data = {}
+    ff = FundamentalFactors()
 
-    for symbol, df in stock_data.items():
-        # 这里简化处理，实际应该从 FactorData 或 FinancialDataManager 获取
-        # 当前模拟生成因子数据
-        np.random.seed(hash(symbol) % 2**32)
+    try:
+        for symbol, df in stock_data.items():
+            factor_df = pd.DataFrame(index=df.index)
+            factor_df['date'] = df['date'] if 'date' in df.columns else df.index
+            factor_df['symbol'] = symbol
 
-        factor_df = pd.DataFrame(index=df.index)
-        factor_df['date'] = df['date'] if 'date' in df.columns else df.index
-        factor_df['symbol'] = symbol
+            # 统一日期格式，避免查询时出现 Timestamp / str 混用
+            date_series = pd.to_datetime(factor_df['date']).dt.strftime('%Y-%m-%d')
 
-        for factor in factor_names:
-            if factor == 'roe':
-                factor_df['roe'] = np.random.uniform(0.05, 0.25, len(df))
-            elif factor == 'pe':
-                factor_df['pe'] = np.random.uniform(5, 30, len(df))
-            elif factor == 'pb':
-                factor_df['pb'] = np.random.uniform(0.5, 5, len(df))
-            elif factor == 'momentum_20':
-                # 计算20日动量
-                if 'close' in df.columns:
-                    returns = df['close'].pct_change()
-                    factor_df['momentum_20'] = returns.rolling(20).sum()
-                else:
-                    factor_df['momentum_20'] = np.random.uniform(-0.1, 0.1, len(df))
-            elif factor == 'revenue_growth':
-                factor_df['revenue_growth'] = np.random.uniform(-0.2, 0.5, len(df))
-            elif factor == 'debt_ratio':
-                factor_df['debt_ratio'] = np.random.uniform(0.2, 0.8, len(df))
-            elif factor == 'turnover_rate':
-                factor_df['turnover_rate'] = np.random.uniform(0.5, 10, len(df))
-            elif factor == 'volume_ratio':
-                factor_df['volume_ratio'] = np.random.uniform(0.5, 3, len(df))
-            else:
-                factor_df[factor] = np.random.randn(len(df))
+            # 先计算技术与情绪因子（基于价格成交量）
+            if 'close' in df.columns:
+                close = pd.to_numeric(df['close'], errors='coerce')
+                returns = close.pct_change()
+                factor_df['momentum_20'] = returns.rolling(20).sum()
+                factor_df['momentum_60'] = returns.rolling(60).sum()
+                factor_df['volatility_20'] = returns.rolling(20).std()
+                factor_df['price_volume_trend'] = (returns.fillna(0) * pd.to_numeric(df.get('volume', 0), errors='coerce').fillna(0)).cumsum()
+                # 相对强弱：用20日收益近似（无基准指数时的保守替代）
+                factor_df['relative_strength'] = close / close.shift(20) - 1
 
-        factor_data[symbol] = factor_df
+            if 'volume' in df.columns:
+                vol = pd.to_numeric(df['volume'], errors='coerce')
+                factor_df['volume_ratio'] = vol / vol.rolling(20).mean()
+
+            # 再按交易日补齐基本面/估值因子
+            for idx, trade_date in enumerate(date_series):
+                try:
+                    day_factors = ff.calculate_all_factors(symbol, trade_date)
+                except Exception:
+                    day_factors = {}
+
+                for factor in factor_names:
+                    if factor in day_factors:
+                        factor_df.at[factor_df.index[idx], factor] = day_factors.get(factor, np.nan)
+                    elif factor == 'eps' and 'eps_ttm' in day_factors:
+                        # 兼容历史页面里使用 eps 名称
+                        factor_df.at[factor_df.index[idx], factor] = day_factors.get('eps_ttm', np.nan)
+
+                # 换手率优先估值表，其次用成交量与流通股本估算
+                if 'turnover_rate' in factor_names:
+                    turnover_rate = np.nan
+                    valuation = ff.fdm.get_valuation(symbol, trade_date)
+                    if valuation:
+                        float_shares = float(valuation.get('float_shares', 0) or 0)
+                        if float_shares > 0 and 'volume' in df.columns:
+                            volume = pd.to_numeric(df.iloc[idx].get('volume', np.nan), errors='coerce')
+                            turnover_rate = (volume / float_shares) * 100 if pd.notna(volume) else np.nan
+                    factor_df.at[factor_df.index[idx], 'turnover_rate'] = turnover_rate
+
+            # 对估值与财务因子做前向填充，保证季度/日频数据对齐到交易日
+            for factor in factor_names:
+                if factor in factor_df.columns:
+                    factor_df[factor] = pd.to_numeric(factor_df[factor], errors='coerce').ffill()
+
+            # 仅保留所需因子列 + 基础列
+            keep_cols = ['date', 'symbol'] + [f for f in factor_names if f in factor_df.columns]
+            factor_data[symbol] = factor_df[keep_cols].copy()
+    finally:
+        ff.close()
 
     return factor_data
 

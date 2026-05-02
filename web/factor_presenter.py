@@ -22,6 +22,8 @@ class FactorPresenter:
     """
 
     # 因子中文名称映射
+    REMOVED_FACTORS = set()
+
     FACTOR_NAMES_CN = {
         # 估值因子
         'pe': '市盈率(PE)',
@@ -32,13 +34,18 @@ class FactorPresenter:
         # 盈利因子
         'roe': '净资产收益率(ROE)',
         'roe_avg': '平均净资产收益率',
-        'roa': '资产收益率(ROA)',
         'gross_margin': '毛利率',
         'net_margin': '净利率',
+        'np_margin': '销售净利率(npMargin)',
+        'gp_margin': '销售毛利率(gpMargin)',
         'eps_ttm': '每股收益(TTM)',
+        'roa': '总资产收益率(ROA)',
+        'net_profit': '净利润(netProfit)',
+        'mb_revenue': '主营业务收入(MBRevenue)',
+        'total_share': '总股本(totalShare)',
+        'liqa_share': '流通股本(liqaShare)',
         'asset_turnover': '资产周转率',
         # 成长因子
-        'revenue_growth': '营收增长率',
         'profit_growth': '利润增长率',
         'equity_growth': '净资产增长率',
         'profit_cagr': '净利润复合增长率',
@@ -85,6 +92,44 @@ class FactorPresenter:
             db_path: 数据库路径
         """
         self.ff = FundamentalFactors(db_path)
+
+    def resolve_trade_date(self, date_option: str = "最新") -> str:
+        """
+        将 UI 的日期选项解析为查询日期。
+
+        Args:
+            date_option: "最新" 或 "YYYY-MM-DD" 或 "YYYY-MM-DD (...)"
+
+        Returns:
+            查询日期 YYYY-MM-DD
+        """
+        if date_option == "最新" or not date_option:
+            return datetime.now().strftime('%Y-%m-%d')
+        return date_option.split(' ')[0]
+
+    def get_factors_on_date(self, symbol: str, date_option: str = "最新") -> Dict:
+        """
+        获取指定日期选项下的因子值与日期上下文。
+
+        Args:
+            symbol: 股票代码
+            date_option: "最新" 或具体日期（可含标签）
+
+        Returns:
+            {
+                "factors": Dict[str, float],
+                "query_date": str,
+                "report_date": str
+            }
+        """
+        query_date = self.resolve_trade_date(date_option)
+        report_date = self.ff.get_report_date(query_date, symbol)
+        factors = self.ff.calculate_all_factors(symbol, query_date)
+        return {
+            'factors': factors,
+            'query_date': query_date,
+            'report_date': report_date,
+        }
 
     def get_single_stock_factors(self, symbol: str,
                                   trade_date: str = None,
@@ -226,8 +271,9 @@ class FactorPresenter:
 
         # 比率类因子转为百分比
         ratio_factors = {
-            'roe', 'roe_avg', 'roa', 'gross_margin', 'net_margin',
-            'revenue_growth', 'profit_growth', 'equity_growth', 'profit_cagr',
+            'roe', 'roe_avg', 'gross_margin', 'net_margin',
+            'np_margin', 'gp_margin',
+            'roa', 'revenue_growth', 'profit_growth', 'equity_growth', 'profit_cagr',
             'debt_ratio', 'current_ratio', 'quick_ratio', 'cash_to_profit',
             'cash_yield', 'asset_turnover', 'equity_multiplier'
         }
@@ -235,7 +281,7 @@ class FactorPresenter:
             return f"{value * 100:.2f}%"
 
         # 金额类因子
-        amount_factors = {'fcf'}
+        amount_factors = {'fcf', 'net_profit', 'mb_revenue'}
         if factor_name in amount_factors:
             if abs(value) >= 1e8:
                 return f"{value / 1e8:.2f}亿"
@@ -243,6 +289,14 @@ class FactorPresenter:
                 return f"{value / 1e4:.2f}万"
             else:
                 return f"{value:.2f}"
+
+        share_factors = {'total_share', 'liqa_share'}
+        if factor_name in share_factors:
+            if abs(value) >= 1e8:
+                return f"{value / 1e8:.2f}亿股"
+            elif abs(value) >= 1e4:
+                return f"{value / 1e4:.2f}万股"
+            return f"{value:.0f}股"
 
         # 其他保留4位小数
         return f"{value:.4f}"
@@ -265,7 +319,10 @@ class FactorPresenter:
                 'factor_direction': 'direction',
                 'factor_value': 'value'
             })
-            return df.set_index('factor_name').to_dict('index')
+            metadata = df.set_index('factor_name').to_dict('index')
+            for removed_factor in self.REMOVED_FACTORS:
+                metadata.pop(removed_factor, None)
+            return metadata
         except Exception as e:
             return {}
         finally:

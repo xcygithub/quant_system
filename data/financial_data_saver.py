@@ -7,6 +7,7 @@ import numpy as np
 from datetime import datetime
 from typing import Dict, List, Optional
 import sqlite3
+import json
 import warnings
 warnings.filterwarnings('ignore')
 from config import DATABASE_PATH
@@ -41,6 +42,34 @@ class FinancialDataSaver:
         conn = sqlite3.connect(self.db_path)
         conn.execute("PRAGMA foreign_keys = ON")
         return conn
+
+    def _save_raw_record(
+        self,
+        cursor: sqlite3.Cursor,
+        symbol: str,
+        data_type: str,
+        row_dict: Dict,
+        report_date: str = None,
+        trade_date: str = None
+    ):
+        """保存接口原始字段（全字段留存）"""
+        if not symbol:
+            return
+
+        raw_json = json.dumps(row_dict, ensure_ascii=False, default=str)
+        baostock_code = str(row_dict.get('code', '') or '')
+        try:
+            cursor.execute(
+                '''
+                INSERT OR REPLACE INTO financial_data_raw
+                (symbol, data_type, report_date, trade_date, baostock_code, raw_json, update_time)
+                VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ''',
+                (symbol, data_type, report_date or '', trade_date or '', baostock_code, raw_json)
+            )
+        except Exception:
+            # 原始表失败不影响结构化核心表写入
+            return
 
     @staticmethod
     def _to_float(value) -> float:
@@ -112,10 +141,10 @@ class FinancialDataSaver:
                 cursor.execute('''
                     INSERT OR REPLACE INTO profit_data
                     (symbol, report_date, report_type, eps, roe, roe_avg,
-                     net_profit_ratio, gross_profit_rate, business_income,
+                     net_profit_ratio, gross_profit_rate, business_income, total_share, liqa_share,
                      operating_profit, net_profit, total_profit, inv_net_profit,
                      pub_date, update_time)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                 ''', (
                     symbol or row.get('symbol', ''),
                     report_date,
@@ -126,12 +155,21 @@ class FinancialDataSaver:
                     self._to_float(row.get('npMargin', 0)),  # 净利率
                     self._to_float(row.get('gpMargin', 0)), # 毛利率
                     self._to_float(row.get('MBRevenue', 0)),  # 营业收入(主营业务收入)
+                    self._to_float(row.get('totalShare', 0)),  # 总股本
+                    self._to_float(row.get('liqaShare', 0)),  # 流通股本
                     0,                                        # 营业利润
                     self._to_float(row.get('netProfit', 0)), # 净利润
                     0,                                        # 利润总额
                     0,                                        # 扣非净利润
                     row.get('pubDate', ''),
                 ))
+                self._save_raw_record(
+                    cursor=cursor,
+                    symbol=symbol or row.get('symbol', ''),
+                    data_type='profit',
+                    row_dict=row.to_dict(),
+                    report_date=report_date
+                )
                 records += 1
 
             except Exception as e:
@@ -170,6 +208,24 @@ class FinancialDataSaver:
 
                 report_type = self._get_report_type(report_date)
 
+                total_assets = self._to_float(row.get('totalAsset', 0))
+                total_liabilities = self._to_float(row.get('totalLiab', 0))
+                raw_debt_ratio = self._to_float(row.get('liabilityToAsset', row.get('debtRatio', 0)))
+                raw_current_ratio = self._to_float(row.get('currentRatio', 0))
+
+                # 优先按资产负债原值计算，统一 debt_ratio 口径为“负债/资产”小数（0.4 表示 40%）
+                debt_ratio_value = 0.0
+                if total_assets > 0 and total_liabilities >= 0:
+                    debt_ratio_value = total_liabilities / total_assets
+                else:
+                    debt_ratio_value = raw_debt_ratio
+                    # 兼容旧口径：部分数据会出现 0.0042（应为 0.42）
+                    if 0 < debt_ratio_value < 0.02 and raw_current_ratio > 0.2:
+                        debt_ratio_value = debt_ratio_value * 100.0
+                    # 若是百分数口径（如 42.3），转为小数 0.423
+                    if debt_ratio_value > 1.0:
+                        debt_ratio_value = debt_ratio_value / 100.0
+
                 cursor.execute('''
                     INSERT OR REPLACE INTO balance_data
                     (symbol, report_date, report_type, total_assets, total_liabilities,
@@ -181,17 +237,27 @@ class FinancialDataSaver:
                     symbol or row.get('symbol', ''),
                     report_date,
                     report_type,
-                    self._to_float(row.get('totalAsset', 0)),
-                    self._to_float(row.get('totalLiab', 0)),
+                    total_assets,
+                    total_liabilities,
                     self._to_float(row.get('equity', 0)),
-                    self._to_float(row.get('debtRatio', 0)),
-                    self._to_float(row.get('equityRatio', 0)),
+                    debt_ratio_value,
+                    # equity_ratio 与 assetToEquity(权益乘数)互为倒数
+                    (1.0 / self._to_float(row.get('assetToEquity', 0))
+                     if self._to_float(row.get('assetToEquity', 0)) > 0
+                     else self._to_float(row.get('equityRatio', 0))),
                     self._to_float(row.get('currAsset', 0)),
                     self._to_float(row.get('fixedAsset', 0)),
                     self._to_float(row.get('intangibleAsset', 0)),
                     self._to_float(row.get('currentRatio', 0)),
                     self._to_float(row.get('quickRatio', 0)),
                 ))
+                self._save_raw_record(
+                    cursor=cursor,
+                    symbol=symbol or row.get('symbol', ''),
+                    data_type='balance',
+                    row_dict=row.to_dict(),
+                    report_date=report_date
+                )
                 records += 1
 
             except Exception as e:
@@ -232,8 +298,8 @@ class FinancialDataSaver:
                     INSERT OR REPLACE INTO cash_flow_data
                     (symbol, report_date, oper_cash_flow, invest_cash_flow,
                      finance_cash_flow, cash_equil_change, end_cash,
-                     oper_cash_flow_ps, update_time)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                     oper_cash_flow_ps, cfo_to_or, cfo_to_np, cfo_to_gr, update_time)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                 ''', (
                     symbol or row.get('symbol', ''),
                     report_date,
@@ -243,7 +309,17 @@ class FinancialDataSaver:
                     self._to_float(row.get('cashEquilChange', 0)),
                     self._to_float(row.get('endCash', 0)),
                     self._to_float(row.get('operCashFlowPS', 0)),
+                    self._to_float(row.get('CFOToOR', 0)),
+                    self._to_float(row.get('CFOToNP', 0)),
+                    self._to_float(row.get('CFOToGr', 0)),
                 ))
+                self._save_raw_record(
+                    cursor=cursor,
+                    symbol=symbol or row.get('symbol', ''),
+                    data_type='cash',
+                    row_dict=row.to_dict(),
+                    report_date=report_date
+                )
                 records += 1
 
             except Exception as e:
@@ -291,12 +367,19 @@ class FinancialDataSaver:
                     symbol or row.get('symbol', ''),
                     report_date,
                     report_type,
-                    self._to_float(row.get('roe', 0)),
-                    self._to_float(row.get('assetStoTurn', 0)),
-                    self._to_float(row.get('equityMultipler', 0)),
-                    self._to_float(row.get('profitToSales', 0)),
-                    self._to_float(row.get('salesToGross', 0)),
+                    self._to_float(row.get('dupontROE', row.get('roe', 0))),
+                    self._to_float(row.get('dupontAssetTurn', row.get('assetStoTurn', 0))),
+                    self._to_float(row.get('dupontAssetStoEquity', row.get('equityMultipler', 0))),
+                    self._to_float(row.get('dupontPnitoni', row.get('profitToSales', 0))),
+                    self._to_float(row.get('dupontNitogr', row.get('salesToGross', 0))),
                 ))
+                self._save_raw_record(
+                    cursor=cursor,
+                    symbol=symbol or row.get('symbol', ''),
+                    data_type='dupont',
+                    row_dict=row.to_dict(),
+                    report_date=report_date
+                )
                 records += 1
 
             except Exception as e:
@@ -344,10 +427,20 @@ class FinancialDataSaver:
                     symbol or row.get('symbol', ''),
                     report_date,
                     report_type,
-                    self._to_float(row.get('profitGrow', 0)),
-                    self._to_float(row.get('profitGrowRatio', 0)),
-                    self._to_float(row.get('assetToIncome', 0)),
+                    # 兼容新版 Baostock 字段：
+                    # YOYNI: 净利润同比，YOYPNI: 扣非净利润同比
+                    self._to_float(row.get('YOYNI', row.get('profitGrow', 0))),
+                    self._to_float(row.get('YOYPNI', row.get('profitGrowRatio', 0))),
+                    # asset_to_income 列沿用旧结构，兼容存放净资产同比（YOYEquity）
+                    self._to_float(row.get('YOYEquity', row.get('assetToIncome', 0))),
                 ))
+                self._save_raw_record(
+                    cursor=cursor,
+                    symbol=symbol or row.get('symbol', ''),
+                    data_type='growth',
+                    row_dict=row.to_dict(),
+                    report_date=report_date
+                )
                 records += 1
 
             except Exception as e:
@@ -396,13 +489,20 @@ class FinancialDataSaver:
                     symbol or row.get('symbol', ''),
                     report_date,
                     report_type,
-                    self._to_float(row.get('invTurnover', 0)),
-                    self._to_float(row.get('arTurnover', 0)),
+                    self._to_float(row.get('INVTurnRatio', row.get('invTurnover', 0))),
+                    self._to_float(row.get('NRTurnRatio', row.get('arTurnover', 0))),
                     self._to_float(row.get('apTurnover', 0)),
-                    self._to_float(row.get('totalAssetTurnover', 0)),
-                    self._to_float(row.get('currAssetTurnover', 0)),
+                    self._to_float(row.get('AssetTurnRatio', row.get('totalAssetTurnover', 0))),
+                    self._to_float(row.get('CATurnRatio', row.get('currAssetTurnover', 0))),
                     self._to_float(row.get('fixedAssetTurnover', 0)),
                 ))
+                self._save_raw_record(
+                    cursor=cursor,
+                    symbol=symbol or row.get('symbol', ''),
+                    data_type='operation',
+                    row_dict=row.to_dict(),
+                    report_date=report_date
+                )
                 records += 1
 
             except Exception as e:
@@ -434,7 +534,7 @@ class FinancialDataSaver:
         records = 0
         for _, row in df.iterrows():
             try:
-                report_date = row.get('date', '')
+                report_date = row.get('statDate', '') or row.get('date', '')
                 if not report_date:
                     continue
 
@@ -453,6 +553,13 @@ class FinancialDataSaver:
                     self._to_float(row.get('quickRatio', 0)),
                     self._to_float(row.get('cashRatio', 0)),
                 ))
+                self._save_raw_record(
+                    cursor=cursor,
+                    symbol=symbol or row.get('symbol', ''),
+                    data_type='debtpaying',
+                    row_dict=row.to_dict(),
+                    report_date=report_date
+                )
                 records += 1
 
             except Exception as e:
@@ -478,8 +585,7 @@ class FinancialDataSaver:
         if df.empty:
             return 0
 
-        if trade_date is None:
-            trade_date = datetime.now().strftime('%Y-%m-%d')
+        default_trade_date = datetime.now().strftime('%Y-%m-%d')
 
         conn = self._get_connection()
         cursor = conn.cursor()
@@ -499,7 +605,7 @@ class FinancialDataSaver:
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                 ''', (
                     symbol,
-                    trade_date,
+                    trade_date or row.get('trade_date') or row.get('date') or default_trade_date,
                     self._to_float(row.get('pe', 0)),
                     self._to_float(row.get('pe_ttm', 0)),
                     self._to_float(row.get('pb', 0)),
@@ -510,6 +616,14 @@ class FinancialDataSaver:
                     self._to_float(row.get('total_shares', 0)),
                     self._to_float(row.get('float_shares', 0)),
                 ))
+                raw_trade_date = trade_date or row.get('trade_date') or row.get('date') or default_trade_date
+                self._save_raw_record(
+                    cursor=cursor,
+                    symbol=symbol,
+                    data_type='valuation',
+                    row_dict=row.to_dict(),
+                    trade_date=raw_trade_date
+                )
                 records += 1
 
             except Exception as e:

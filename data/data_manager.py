@@ -149,6 +149,8 @@ class DataManager:
                 net_profit_ratio REAL,
                 gross_profit_rate REAL,
                 business_income REAL,
+                total_share REAL,
+                liqa_share REAL,
                 operating_profit REAL,
                 net_profit REAL,
                 total_profit REAL,
@@ -158,6 +160,11 @@ class DataManager:
                 UNIQUE(symbol, report_date)
             )
         ''')
+        # 兼容历史库：补齐新增字段
+        self._ensure_column_exists(cursor, 'profit_data', 'total_share', 'REAL')
+        self._ensure_column_exists(cursor, 'profit_data', 'liqa_share', 'REAL')
+        # 兼容历史数据：统一 debt_ratio 口径为负债/资产（小数）
+        self._normalize_debt_ratio(cursor)
 
         # 2. 资产负债数据（资产负债表）
         cursor.execute('''
@@ -194,10 +201,16 @@ class DataManager:
                 cash_equil_change REAL,
                 end_cash REAL,
                 oper_cash_flow_ps REAL,
+                cfo_to_or REAL,
+                cfo_to_np REAL,
+                cfo_to_gr REAL,
                 update_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(symbol, report_date)
             )
         ''')
+        self._ensure_column_exists(cursor, 'cash_flow_data', 'cfo_to_or', 'REAL')
+        self._ensure_column_exists(cursor, 'cash_flow_data', 'cfo_to_np', 'REAL')
+        self._ensure_column_exists(cursor, 'cash_flow_data', 'cfo_to_gr', 'REAL')
 
         # 4. 杜邦分析数据
         cursor.execute('''
@@ -300,6 +313,21 @@ class DataManager:
             )
         ''')
 
+        # 8.2 财务原始数据（接口全字段留存）
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS financial_data_raw (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                symbol TEXT NOT NULL,
+                data_type TEXT NOT NULL,
+                report_date TEXT DEFAULT '',
+                trade_date TEXT DEFAULT '',
+                baostock_code TEXT DEFAULT '',
+                raw_json TEXT NOT NULL,
+                update_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(symbol, data_type, report_date, trade_date)
+            )
+        ''')
+
         # 9. 财务因子缓存表
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS factor_cache (
@@ -372,10 +400,8 @@ class DataManager:
             ('pcf', 'valuation', 'negative', '市现率', 'price / cash_flow_per_share'),
             ('roe', 'profitability', 'positive', '净资产收益率', 'net_profit / equity'),
             ('roe_avg', 'profitability', 'positive', '平均净资产收益率', 'roe_avg'),
-            ('roa', 'profitability', 'positive', '资产收益率', 'net_profit / total_assets'),
             ('gross_margin', 'profitability', 'positive', '毛利率', 'gross_profit / revenue'),
             ('net_margin', 'profitability', 'positive', '净利率', 'net_profit / revenue'),
-            ('revenue_growth', 'growth', 'positive', '营收增长率', '(revenue_now - revenue_prev) / revenue_prev'),
             ('profit_growth', 'growth', 'positive', '利润增长率', '(profit_now - profit_prev) / profit_prev'),
             ('equity_growth', 'growth', 'positive', '净资产增长率', '(equity_now - equity_prev) / equity_prev'),
             ('debt_ratio', 'structure', 'neutral', '资产负债率', 'total_liabilities / total_assets'),
@@ -521,8 +547,98 @@ class DataManager:
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_factor_attribution_date ON factor_attribution(date)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_backtest_runs_date ON backtest_runs(start_date, end_date)')
 
+        # 历史数据兼容修正
+        self._backfill_cashflow_ratio_from_raw(cursor)
+
         conn.commit()
         conn.close()
+
+    def _ensure_column_exists(self, cursor, table_name: str, column_name: str, column_type: str):
+        """确保表字段存在（用于历史库升级）"""
+        cursor.execute(f"PRAGMA table_info({table_name})")
+        columns = [row[1] for row in cursor.fetchall()]
+        if column_name not in columns:
+            cursor.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}")
+
+    def _normalize_debt_ratio(self, cursor):
+        """
+        统一历史 debt_ratio 口径，避免出现 0.4 与 0.004 混用。
+
+        优先使用 total_liabilities / total_assets 重算。
+        """
+        try:
+            cursor.execute(
+                '''
+                UPDATE balance_data
+                SET debt_ratio = (total_liabilities * 1.0 / total_assets)
+                WHERE total_assets > 0 AND total_liabilities >= 0
+                '''
+            )
+            # 第二步：修正已落库的千分位/万分位口径异常值（如 0.0042 应为 0.42）
+            cursor.execute(
+                '''
+                UPDATE balance_data
+                SET debt_ratio = debt_ratio * 100.0
+                WHERE debt_ratio > 0
+                  AND debt_ratio < 0.02
+                  AND current_ratio > 0.2
+                '''
+            )
+        except Exception:
+            # 历史库异常时不阻塞初始化
+            pass
+
+    def _backfill_cashflow_ratio_from_raw(self, cursor):
+        """从 raw_json 回填 cash_flow_data 的 CFO 比率字段。"""
+        try:
+            cursor.execute(
+                '''
+                SELECT symbol, report_date, raw_json
+                FROM financial_data_raw
+                WHERE data_type = 'cash'
+                  AND raw_json IS NOT NULL
+                '''
+            )
+            rows = cursor.fetchall()
+            if not rows:
+                return
+
+            import json
+            updates = []
+
+            for symbol, report_date, raw_json in rows:
+                try:
+                    raw = json.loads(raw_json)
+                except Exception:
+                    continue
+
+                def to_float(value):
+                    try:
+                        if value is None or str(value).strip() == '':
+                            return 0.0
+                        return float(value)
+                    except Exception:
+                        return 0.0
+
+                updates.append((
+                    to_float(raw.get('CFOToOR', 0)),
+                    to_float(raw.get('CFOToNP', 0)),
+                    to_float(raw.get('CFOToGr', 0)),
+                    symbol,
+                    report_date
+                ))
+
+            if updates:
+                cursor.executemany(
+                    '''
+                    UPDATE cash_flow_data
+                    SET cfo_to_or = ?, cfo_to_np = ?, cfo_to_gr = ?
+                    WHERE symbol = ? AND report_date = ?
+                    ''',
+                    updates
+                )
+        except Exception:
+            pass
 
     # ========== 子管理器访问 ==========
 

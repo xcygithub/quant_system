@@ -428,20 +428,113 @@ class FinancialDataSource:
         return result
 
     # ========== 偿债能力 ==========
-    # 注意：Baostock 没有独立的 query_debtpaying_data 接口
-    # 偿债能力指标（流动比率、速动比率、现金比率）包含在 query_balance_data 中
-    # 此处保留方法签名以兼容接口，但实际数据从资产负债表获取
 
     def get_debtpaying_data(self, symbol: str, start_year: int = None,
                             end_year: int = None) -> pd.DataFrame:
         """
         获取偿债能力数据
-        
-        注意：Baostock 无独立接口，此方法返回空 DataFrame
-        偿债能力数据应从 balance_data 中提取
+
+        优先调用 Baostock 的 query_debtpaying_data 接口。
+        若当前 baostock 版本不支持该接口，则退化为从资产负债表中抽取
+        currentRatio / quickRatio / cashRatio 字段。
         """
-        print(f"  [!] {symbol} 偿债能力数据：Baostock 无独立接口，请从资产负债表获取")
-        return pd.DataFrame()
+        self._ensure_login()
+
+        if end_year is None:
+            end_year = datetime.now().year
+        if start_year is None:
+            start_year = end_year - 3
+
+        bs_code = self._convert_to_baostock_code(symbol)
+        if bs_code is None:
+            return pd.DataFrame()
+
+        # 1) 优先走独立接口
+        if hasattr(self.bs, 'query_debtpaying_data'):
+            self._rate_limit('query_debtpaying_data')
+            all_data = []
+            for year in range(start_year, end_year + 1):
+                for quarter in [1, 2, 3, 4]:
+                    try:
+                        rs = self.bs.query_debtpaying_data(
+                            code=bs_code,
+                            year=str(year),
+                            quarter=str(quarter)
+                        )
+                        if rs.error_code == '0':
+                            data_list = []
+                            while rs.next():
+                                data_list.append(rs.get_row_data())
+                            if data_list:
+                                df = pd.DataFrame(data_list, columns=rs.fields)
+                                all_data.append(df)
+                        time.sleep(0.1)
+                    except Exception:
+                        continue
+
+            if all_data:
+                result = pd.concat(all_data, ignore_index=True)
+                result['symbol'] = symbol
+                print(f"  [OK] {symbol} 获取偿债能力 {len(result)} 条记录（独立接口）")
+                return result
+
+        # 2) 回退：从资产负债表字段抽取偿债能力
+        balance_df = self.get_balance_data(symbol, start_year=start_year, end_year=end_year)
+        if balance_df.empty:
+            print(f"  {symbol} 偿债能力数据为空（独立接口与资产负债表均无数据）")
+            return pd.DataFrame()
+
+        fallback_cols = ['statDate', 'date', 'code', 'currentRatio', 'quickRatio', 'cashRatio']
+        for col in fallback_cols:
+            if col not in balance_df.columns:
+                balance_df[col] = ''
+
+        result = balance_df[fallback_cols].copy()
+        result['symbol'] = symbol
+        print(f"  [OK] {symbol} 获取偿债能力 {len(result)} 条记录（资产负债表回退）")
+        return result
+
+    # ========== 全量财务数据 ==========
+
+    def get_all_financial_data(self, symbol: str, start_year: int = None,
+                               end_year: int = None,
+                               data_types: List[str] = None) -> Dict[str, pd.DataFrame]:
+        """
+        获取单只股票全部财务数据（红框六类 + 估值可选）
+
+        Args:
+            symbol: 股票代码
+            start_year: 起始年份
+            end_year: 结束年份
+            data_types: 数据类型列表，None 表示默认全量
+
+        Returns:
+            {data_type: DataFrame}
+        """
+        if data_types is None:
+            data_types = ['profit', 'balance', 'cash', 'dupont', 'growth', 'operation', 'debtpaying']
+
+        result: Dict[str, pd.DataFrame] = {}
+        for data_type in data_types:
+            if data_type == 'profit':
+                result[data_type] = self.get_profit_data(symbol, start_year, end_year)
+            elif data_type == 'balance':
+                result[data_type] = self.get_balance_data(symbol, start_year, end_year)
+            elif data_type == 'cash':
+                result[data_type] = self.get_cash_flow_data(symbol, start_year, end_year)
+            elif data_type == 'dupont':
+                result[data_type] = self.get_dupont_data(symbol, start_year, end_year)
+            elif data_type == 'growth':
+                result[data_type] = self.get_growth_data(symbol, start_year, end_year)
+            elif data_type == 'operation':
+                result[data_type] = self.get_operation_data(symbol, start_year, end_year)
+            elif data_type == 'debtpaying':
+                result[data_type] = self.get_debtpaying_data(symbol, start_year, end_year)
+            elif data_type == 'valuation':
+                result[data_type] = self.get_history_valuation(symbol)
+            else:
+                result[data_type] = pd.DataFrame()
+        return result
 
     # ========== 全市场股票列表 ==========
 
@@ -526,12 +619,16 @@ class FinancialDataSource:
 
     # ========== 全市场估值数据 ==========
 
-    def get_all_stocks_valuation(self) -> pd.DataFrame:
+    def get_all_stocks_valuation(self, end_date: str = None, lookback_days: int = 10) -> pd.DataFrame:
         """
         获取所有股票的实时估值数据
 
         通过 query_history_k_data_plus 遍历获取单只股票数据
-        由于是日频数据，每天只返回一条记录
+        默认在最近 lookback_days 天内寻找最新交易日数据
+
+        Args:
+            end_date: 截止日期，格式 YYYY-MM-DD，默认今天
+            lookback_days: 向前回看天数，默认 10 天（覆盖周末/节假日）
 
         Returns columns: [symbol, trade_date, pe_ttm, pb, ps, pcf, close]
         """
@@ -544,7 +641,13 @@ class FinancialDataSource:
             return pd.DataFrame()
 
         all_data = []
-        today = datetime.now().strftime('%Y-%m-%d')
+        if end_date is None:
+            end_dt = datetime.now()
+        else:
+            end_dt = datetime.strptime(end_date, '%Y-%m-%d')
+        start_dt = end_dt - timedelta(days=lookback_days)
+        start_date = start_dt.strftime('%Y-%m-%d')
+        end_date_str = end_dt.strftime('%Y-%m-%d')
 
         for i, symbol in enumerate(symbols):
             self._rate_limit('query_history_k_data')
@@ -557,8 +660,8 @@ class FinancialDataSource:
                 rs = self.bs.query_history_k_data_plus(
                     bs_code,
                     "date,code,close,peTTM,pbMRQ,psTTM,pcfNcfTTM",
-                    start_date=today,
-                    end_date=today,
+                    start_date=start_date,
+                    end_date=end_date_str,
                     frequency="d",
                     adjustflag="3"
                 )
@@ -581,6 +684,9 @@ class FinancialDataSource:
                         for col in ['close', 'pe_ttm', 'pb', 'ps', 'pcf']:
                             if col in df.columns:
                                 df[col] = pd.to_numeric(df[col], errors='coerce')
+                        # 仅保留该股票最近交易日的一条估值记录
+                        df = df.sort_values('date', ascending=False).head(1)
+                        df = df.rename(columns={'date': 'trade_date'})
                         all_data.append(df)
 
                 if (i + 1) % 100 == 0:
