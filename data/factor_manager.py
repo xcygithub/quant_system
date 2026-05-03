@@ -15,6 +15,9 @@ import pandas as pd
 import sqlite3
 from typing import Dict, List, Optional
 from datetime import datetime
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class FactorManager:
@@ -142,25 +145,63 @@ class FactorManager:
             conn.close()
             return 0
 
-        saved_count = 0
-        try:
-            cursor.execute("BEGIN TRANSACTION")
-            for _, row in df.iterrows():
-                cursor.execute("""
-                    DELETE FROM factor_values
-                    WHERE symbol = ? AND trade_date = ? AND factor_name = ?
-                """, (row['symbol'], row['trade_date'], row['factor_name']))
+        if symbol and 'symbol' in df.columns:
+            df = df.copy()
+            df['symbol'] = symbol
 
-                cursor.execute("""
-                    INSERT INTO factor_values
-                    (symbol, trade_date, factor_name, factor_value, update_time)
-                    VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
-                """, (row['symbol'], row['trade_date'], row['factor_name'], row['factor_value']))
-                saved_count += 1
-            cursor.execute("COMMIT")
+        # 动态适配字段，确保仅写入数据库存在的列
+        cursor.execute("PRAGMA table_info(factor_values)")
+        available_columns = {row[1] for row in cursor.fetchall()}
+        insert_columns = ["symbol", "trade_date", "factor_name", "factor_value"]
+        optional_columns = [
+            "value_source",
+            "is_imputed",
+            "quality_flag",
+            "asof_trade_date",
+            "source_report_date",
+            "source_pub_date",
+        ]
+        for col in optional_columns:
+            if col in available_columns and col in df.columns:
+                insert_columns.append(col)
+        if "update_time" in available_columns:
+            insert_columns.append("update_time")
+
+        records = []
+        for row in df.to_dict("records"):
+            record = []
+            for col in insert_columns:
+                if col == "update_time":
+                    record.append(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+                    continue
+                value = row.get(col)
+                if isinstance(value, float) and pd.isna(value):
+                    value = None
+                elif pd.isna(value):
+                    value = None
+                record.append(value)
+            records.append(tuple(record))
+
+        if not records:
+            conn.close()
+            return 0
+
+        try:
+            cols_sql = ", ".join(insert_columns)
+            placeholders = ", ".join(["?" for _ in insert_columns])
+            cursor.executemany(
+                f"""
+                INSERT OR REPLACE INTO factor_values
+                ({cols_sql})
+                VALUES ({placeholders})
+                """,
+                records,
+            )
+            conn.commit()
+            saved_count = len(records)
         except Exception as e:
-            cursor.execute("ROLLBACK")
-            print(f"[FactorManager] 保存因子值失败: {e}")
+            conn.rollback()
+            logger.error("[FactorManager] 保存因子值失败: %s", e)
             saved_count = 0
         finally:
             conn.close()
@@ -440,24 +481,25 @@ class FactorManager:
             conn.close()
             return 0
 
-        saved_count = 0
-        try:
-            cursor.execute("BEGIN TRANSACTION")
-            for _, row in df.iterrows():
-                cursor.execute("""
-                    DELETE FROM factor_cache
-                    WHERE symbol = ? AND trade_date = ? AND factor_name = ?
-                """, (row['symbol'], row['trade_date'], row['factor_name']))
+        records = [
+            (row.symbol, row.trade_date, row.factor_name, row.factor_value)
+            for row in df.itertuples(index=False)
+        ]
 
-                cursor.execute("""
-                    INSERT INTO factor_cache
-                    (symbol, trade_date, factor_name, factor_value, update_time)
-                    VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
-                """, (row['symbol'], row['trade_date'], row['factor_name'], row['factor_value']))
-                saved_count += 1
-            cursor.execute("COMMIT")
+        if not records:
+            conn.close()
+            return 0
+
+        try:
+            cursor.executemany("""
+                INSERT OR REPLACE INTO factor_cache
+                (symbol, trade_date, factor_name, factor_value, update_time)
+                VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+            """, records)
+            conn.commit()
+            saved_count = len(records)
         except Exception as e:
-            cursor.execute("ROLLBACK")
+            conn.rollback()
             print(f"[FactorManager] 保存因子缓存失败: {e}")
             saved_count = 0
         finally:

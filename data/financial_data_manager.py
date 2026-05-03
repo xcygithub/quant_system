@@ -9,11 +9,38 @@ from typing import Dict, List, Optional, Callable
 import sqlite3
 import time
 import warnings
+import logging
 warnings.filterwarnings('ignore')
 
 from .financial_data_source import FinancialDataSource
 from .financial_data_saver import FinancialDataSaver
 from config import DATABASE_PATH
+
+logger = logging.getLogger(__name__)
+
+_BENCHMARK_SYMBOLS = {"399001.SZ", "399006.SZ", "000001.SH", "000688.SH"}
+
+
+def _normalize_symbol(symbol: str) -> str:
+    symbol = (symbol or "").strip().upper()
+    if ":" in symbol:
+        prefix, code = symbol.split(":", 1)
+        code = code.strip()
+        if prefix == "SH":
+            return f"{code}.SH"
+        if prefix == "SZ":
+            return f"{code}.SZ"
+    if symbol.endswith((".SH", ".SZ", ".BJ", ".HK")):
+        return symbol
+    if symbol.startswith(("6", "5", "9")):
+        return f"{symbol}.SH"
+    if symbol.startswith(("0", "1", "2", "3")):
+        return f"{symbol}.SZ"
+    return f"{symbol}.SZ"
+
+
+def _is_benchmark_symbol(symbol: str) -> bool:
+    return _normalize_symbol(symbol) in _BENCHMARK_SYMBOLS
 
 
 class FinancialDataManager:
@@ -57,91 +84,94 @@ class FinancialDataManager:
         Returns:
             Dict[str, int]: 每种类型的更新记录数
         """
+        if _is_benchmark_symbol(symbol):
+            logger.info("跳过指数财务更新: symbol=%s", symbol)
+            return {dt: 0 for dt in (data_types or ['profit', 'balance', 'cash', 'dupont', 'growth', 'operation', 'debtpaying'])}
+
         if data_types is None:
             # 默认更新红框六类财务数据
             data_types = ['profit', 'balance', 'cash', 'dupont', 'growth', 'operation', 'debtpaying']
 
         if start_year is None:
-            start_year = datetime.now().year - 3
+            # 默认至少覆盖“回测起始年前一年Q3”场景，避免年初因子全0
+            start_year = datetime.now().year - 4
         if end_year is None:
             end_year = datetime.now().year
 
         results = {}
 
-        print(f"\n{'='*50}")
-        print(f"更新 {symbol} 财务数据 (从 {start_year} 年至今)")
-        print(f"数据类型: {data_types}")
-        print(f"{'='*50}")
+        logger.info(
+            "开始更新单股财务数据: symbol=%s start_year=%s end_year=%s data_types=%s",
+            symbol, start_year, end_year, data_types
+        )
 
         total_types = len(data_types)
         step = 1
 
         # 利润表
         if 'profit' in data_types:
-            print(f"\n[{step}/{total_types}] 获取利润表数据...")
+            logger.info("更新进度: symbol=%s step=%s/%s data_type=profit", symbol, step, total_types)
             df = self.source.get_profit_data(symbol, start_year=start_year, end_year=end_year)
             count = self.saver.save_profit_data(df, symbol)
             results['profit'] = count
-            print(f"    -> 保存 {count} 条记录")
+            logger.info("更新完成: symbol=%s data_type=profit saved_rows=%s", symbol, count)
             step += 1
 
         # 资产负债表
         if 'balance' in data_types:
-            print(f"\n[{step}/{total_types}] 获取资产负债表...")
+            logger.info("更新进度: symbol=%s step=%s/%s data_type=balance", symbol, step, total_types)
             df = self.source.get_balance_data(symbol, start_year=start_year, end_year=end_year)
             count = self.saver.save_balance_data(df, symbol)
             results['balance'] = count
-            print(f"    -> 保存 {count} 条记录")
+            logger.info("更新完成: symbol=%s data_type=balance saved_rows=%s", symbol, count)
             step += 1
 
         # 现金流量表
         if 'cash' in data_types:
-            print(f"\n[{step}/{total_types}] 获取现金流量表...")
+            logger.info("更新进度: symbol=%s step=%s/%s data_type=cash", symbol, step, total_types)
             df = self.source.get_cash_flow_data(symbol, start_year=start_year, end_year=end_year)
             count = self.saver.save_cash_flow_data(df, symbol)
             results['cash'] = count
-            print(f"    -> 保存 {count} 条记录")
+            logger.info("更新完成: symbol=%s data_type=cash saved_rows=%s", symbol, count)
             step += 1
 
         # 杜邦分析
         if 'dupont' in data_types:
-            print(f"\n[{step}/{total_types}] 获取杜邦分析数据...")
+            logger.info("更新进度: symbol=%s step=%s/%s data_type=dupont", symbol, step, total_types)
             df = self.source.get_dupont_data(symbol, start_year=start_year, end_year=end_year)
             count = self.saver.save_dupont_data(df, symbol)
             results['dupont'] = count
-            print(f"    -> 保存 {count} 条记录")
+            logger.info("更新完成: symbol=%s data_type=dupont saved_rows=%s", symbol, count)
             step += 1
 
         # 成长能力
         if 'growth' in data_types:
-            print(f"\n[{step}/{total_types}] 获取成长能力数据...")
+            logger.info("更新进度: symbol=%s step=%s/%s data_type=growth", symbol, step, total_types)
             df = self.source.get_growth_data(symbol, start_year=start_year, end_year=end_year)
             count = self.saver.save_growth_data(df, symbol)
             results['growth'] = count
-            print(f"    -> 保存 {count} 条记录")
+            logger.info("更新完成: symbol=%s data_type=growth saved_rows=%s", symbol, count)
             step += 1
 
         # 营运能力
         if 'operation' in data_types:
-            print(f"\n[{step}/{total_types}] 获取营运能力数据...")
+            logger.info("更新进度: symbol=%s step=%s/%s data_type=operation", symbol, step, total_types)
             df = self.source.get_operation_data(symbol, start_year=start_year, end_year=end_year)
             count = self.saver.save_operation_data(df, symbol)
             results['operation'] = count
-            print(f"    -> 保存 {count} 条记录")
+            logger.info("更新完成: symbol=%s data_type=operation saved_rows=%s", symbol, count)
             step += 1
 
         # 偿债能力
         if 'debtpaying' in data_types:
-            print(f"\n[{step}/{total_types}] 获取偿债能力数据...")
+            logger.info("更新进度: symbol=%s step=%s/%s data_type=debtpaying", symbol, step, total_types)
             df = self.source.get_debtpaying_data(symbol, start_year=start_year, end_year=end_year)
             count = self.saver.save_debtpaying_data(df, symbol)
             results['debtpaying'] = count
-            print(f"    -> 保存 {count} 条记录")
+            logger.info("更新完成: symbol=%s data_type=debtpaying saved_rows=%s", symbol, count)
             step += 1
 
-        print(f"\n{'='*50}")
-        print(f"{symbol} 更新完成")
-        print(f"{'='*50}")
+        logger.info("单股财务更新完成: symbol=%s results=%s", symbol, results)
 
         return results
 
@@ -171,14 +201,11 @@ class FinancialDataManager:
         total_results = {dt: 0 for dt in data_types}
         total = len(symbols)
 
-        print(f"\n{'='*60}")
-        print(f"批量更新 {total} 只股票的财务数据")
-        print(f"数据类型: {data_types}")
-        print(f"{'='*60}")
+        logger.info("开始批量财务更新: symbols=%s data_types=%s", total, data_types)
 
         for i, symbol in enumerate(symbols):
             try:
-                print(f"\n[{i+1}/{total}] 处理 {symbol}...")
+                logger.info("批量更新进度: index=%s total=%s symbol=%s", i + 1, total, symbol)
                 results = self.update_single_stock(symbol, data_types, start_year, end_year)
 
                 for dt, count in results.items():
@@ -188,16 +215,16 @@ class FinancialDataManager:
                     progress_callback(i + 1, total, symbol)
 
             except Exception as e:
-                print(f"  更新 {symbol} 失败: {e}")
+                logger.warning(
+                    "批量更新失败: symbol=%s error_type=%s error=%s",
+                    symbol, type(e).__name__, e
+                )
                 continue
 
             # Baostock 限流：每秒1次
             time.sleep(1.1)
 
-        print(f"\n{'='*60}")
-        print(f"批量更新完成")
-        print(f"总记录数: {total_results}")
-        print(f"{'='*60}")
+        logger.info("批量更新完成: results=%s", total_results)
 
         return total_results
 
@@ -249,7 +276,10 @@ class FinancialDataManager:
         try:
             df = pd.read_sql_query(query, conn, params=params)
         except Exception as e:
-            print(f"查询财务数据失败: {e}")
+            logger.warning(
+                "查询财务数据失败: symbol=%s data_type=%s start_date=%s end_date=%s error_type=%s error=%s",
+                symbol, data_type, start_date, end_date, type(e).__name__, e
+            )
             df = pd.DataFrame()
 
         conn.close()
@@ -358,7 +388,10 @@ class FinancialDataManager:
         try:
             df = pd.read_sql_query(query, conn, params=params)
         except Exception as e:
-            print(f"查询估值数据失败: {e}")
+            logger.warning(
+                "查询估值数据失败: symbols_count=%s trade_date=%s error_type=%s error=%s",
+                len(symbols) if symbols else 0, trade_date, type(e).__name__, e
+            )
             df = pd.DataFrame()
 
         conn.close()
@@ -379,22 +412,18 @@ class FinancialDataManager:
         if trade_date is None:
             trade_date = datetime.now().strftime('%Y-%m-%d')
 
-        print(f"\n{'='*50}")
-        print(f"更新全市场估值数据 ({trade_date})")
-        print(f"{'='*50}")
+        logger.info("开始更新全市场估值: trade_date=%s", trade_date)
 
         df = self.source.get_all_stocks_valuation()
 
         if df.empty:
-            print("获取失败")
+            logger.warning("全市场估值获取失败: trade_date=%s", trade_date)
             return 0
 
-        print(f"获取到 {len(df)} 只股票的估值数据")
-        print("保存到数据库...")
+        logger.info("全市场估值获取成功: rows=%s", len(df))
 
         count = self.saver.save_valuation_data(df, trade_date)
-        print(f"保存 {count} 条记录")
-        print(f"{'='*50}")
+        logger.info("全市场估值保存完成: saved_rows=%s trade_date=%s", count, trade_date)
 
         return count
 
@@ -421,7 +450,11 @@ class FinancialDataManager:
         '''
         try:
             df = pd.read_sql_query(query, conn, params=(symbol,))
-        except:
+        except Exception as e:
+            logger.warning(
+                "检查数据新鲜度失败: symbol=%s table=%s error_type=%s error=%s",
+                symbol, table, type(e).__name__, e
+            )
             conn.close()
             return False
 
@@ -432,7 +465,11 @@ class FinancialDataManager:
         try:
             latest_date = datetime.strptime(str(df.iloc[0, 0]), '%Y-%m-%d')
             age_days = (datetime.now() - latest_date).days
-        except:
+        except Exception as e:
+            logger.warning(
+                "解析最新日期失败: symbol=%s table=%s raw_date=%s error_type=%s error=%s",
+                symbol, table, df.iloc[0, 0], type(e).__name__, e
+            )
             conn.close()
             return False
 
@@ -481,7 +518,11 @@ class FinancialDataManager:
                         'age_days': age_days,
                         'is_fresh': age_days <= 120
                     }
-            except:
+            except Exception as e:
+                logger.warning(
+                    "获取数据新鲜度失败: symbol=%s table=%s error_type=%s error=%s",
+                    symbol, table, type(e).__name__, e
+                )
                 result[table] = {'latest_date': None, 'age_days': None, 'is_fresh': False}
 
         conn.close()
@@ -519,7 +560,7 @@ class FinancialDataManager:
         """析构时确保关闭"""
         try:
             self.close()
-        except:
+        except Exception:
             pass
 
 

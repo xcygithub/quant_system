@@ -9,8 +9,11 @@ from typing import Dict, List, Optional
 import sqlite3
 import json
 import warnings
+import logging
 warnings.filterwarnings('ignore')
 from config import DATABASE_PATH
+
+logger = logging.getLogger(__name__)
 
 
 class FinancialDataSaver:
@@ -67,9 +70,21 @@ class FinancialDataSaver:
                 ''',
                 (symbol, data_type, report_date or '', trade_date or '', baostock_code, raw_json)
             )
-        except Exception:
+        except Exception as e:
             # 原始表失败不影响结构化核心表写入
+            logger.debug(
+                "保存原始财务记录失败: symbol=%s data_type=%s report_date=%s trade_date=%s error_type=%s error=%s",
+                symbol, data_type, report_date, trade_date, type(e).__name__, e
+            )
             return
+
+    def _log_row_error(self, action: str, symbol: str, row: pd.Series, error: Exception) -> None:
+        """记录逐行保存时的异常上下文。"""
+        report_date = row.get('statDate', '') or row.get('date', '')
+        logger.warning(
+            "财务数据保存失败: action=%s symbol=%s report_date=%s error_type=%s error=%s",
+            action, symbol or row.get('symbol', ''), report_date, type(error).__name__, error
+        )
 
     @staticmethod
     def _to_float(value) -> float:
@@ -173,6 +188,7 @@ class FinancialDataSaver:
                 records += 1
 
             except Exception as e:
+                self._log_row_error("save_profit_data", symbol, row, e)
                 continue
 
         conn.commit()
@@ -261,6 +277,7 @@ class FinancialDataSaver:
                 records += 1
 
             except Exception as e:
+                self._log_row_error("save_balance_data", symbol, row, e)
                 continue
 
         conn.commit()
@@ -323,6 +340,7 @@ class FinancialDataSaver:
                 records += 1
 
             except Exception as e:
+                self._log_row_error("save_cash_flow_data", symbol, row, e)
                 continue
 
         conn.commit()
@@ -383,6 +401,7 @@ class FinancialDataSaver:
                 records += 1
 
             except Exception as e:
+                self._log_row_error("save_dupont_data", symbol, row, e)
                 continue
 
         conn.commit()
@@ -444,6 +463,7 @@ class FinancialDataSaver:
                 records += 1
 
             except Exception as e:
+                self._log_row_error("save_growth_data", symbol, row, e)
                 continue
 
         conn.commit()
@@ -506,6 +526,7 @@ class FinancialDataSaver:
                 records += 1
 
             except Exception as e:
+                self._log_row_error("save_operation_data", symbol, row, e)
                 continue
 
         conn.commit()
@@ -563,6 +584,7 @@ class FinancialDataSaver:
                 records += 1
 
             except Exception as e:
+                self._log_row_error("save_debtpaying_data", symbol, row, e)
                 continue
 
         conn.commit()
@@ -627,6 +649,7 @@ class FinancialDataSaver:
                 records += 1
 
             except Exception as e:
+                self._log_row_error("save_valuation_data", symbol, row, e)
                 continue
 
         conn.commit()
@@ -672,6 +695,7 @@ class FinancialDataSaver:
                 records += 1
 
             except Exception as e:
+                self._log_row_error("save_stock_info", symbol, row, e)
                 continue
 
         conn.commit()

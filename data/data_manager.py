@@ -373,10 +373,15 @@ class DataManager:
                 trade_date TEXT NOT NULL,
                 factor_name TEXT NOT NULL,
                 factor_value REAL,
+                source_pub_date TEXT,
                 update_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(symbol, trade_date, factor_name)
             )
         ''')
+        cursor.execute("PRAGMA table_info(factor_values)")
+        factor_value_cols = {row[1] for row in cursor.fetchall()}
+        if "source_pub_date" not in factor_value_cols:
+            cursor.execute("ALTER TABLE factor_values ADD COLUMN source_pub_date TEXT")
 
         # 2. 因子元数据表
         cursor.execute('''

@@ -37,10 +37,15 @@ def init_factor_tables(db_path: str = None):
             trade_date TEXT NOT NULL,
             factor_name TEXT NOT NULL,
             factor_value REAL,
+            source_pub_date TEXT,
             update_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             UNIQUE(symbol, trade_date, factor_name)
         )
     ''')
+    cursor.execute("PRAGMA table_info(factor_values)")
+    existing_cols = {row[1] for row in cursor.fetchall()}
+    if "source_pub_date" not in existing_cols:
+        cursor.execute("ALTER TABLE factor_values ADD COLUMN source_pub_date TEXT")
 
     # 创建索引
     cursor.execute('''

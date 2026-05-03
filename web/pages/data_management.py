@@ -13,7 +13,7 @@ from data.data_manager import DataManager
 from data.financial_data_source import FinancialDataSource
 from data.financial_data_manager import FinancialDataManager
 from data.financial_data_saver import FinancialDataSaver
-from portfolio.watchlist import WatchlistManager
+from portfolio.watchlist import WatchlistManager, filter_out_benchmark_stocks, filter_out_benchmark_symbols
 
 
 # =============================================================================
@@ -285,8 +285,8 @@ def render_data_management_page():
         "起始年份",
         min_value=2010,
         max_value=datetime.now().year,
-        value=datetime.now().year - 3,
-        help="财务数据的历史范围（最近 N 年）"
+        value=datetime.now().year - 4,
+        help="财务数据的历史范围（默认近4年，覆盖年初回测对上年Q3的依赖）"
     )
 
     # 获取按钮
@@ -332,11 +332,11 @@ def render_data_management_page():
             elif fetch_mode == "自选股":
                 mode_desc = f"自选股 ({watchlist_count} 只)"
                 wl = WatchlistManager()
-                symbols = [s.symbol for s in wl.get_all_stocks()]
+                symbols = [s.symbol for s in filter_out_benchmark_stocks(wl.get_all_stocks())]
             else:
                 symbol_input = st.text_input("请输入股票代码", placeholder="000001.SZ")
                 if symbol_input:
-                    symbols = [symbol_input.upper()]
+                    symbols = filter_out_benchmark_symbols([symbol_input.upper()])
                     mode_desc = f"单只股票 {symbol_input}"
 
             if symbols:
@@ -402,7 +402,7 @@ def render_data_management_page():
             fds.logout()
         elif fetch_mode == "自选股":
             wl = WatchlistManager()
-            stocks = wl.get_all_stocks()
+            stocks = filter_out_benchmark_stocks(wl.get_all_stocks())
             valuation_symbols = [s.symbol for s in stocks]
             mode_desc = f"自选股 ({len(valuation_symbols)} 只)"
         else:

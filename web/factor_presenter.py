@@ -187,23 +187,24 @@ class FactorPresenter:
         Returns:
             DataFrame，包含股票代码、因子值、排名
         """
-        rows = []
         metadata = self._get_factor_metadata()
         meta = metadata.get(factor_name, {})
         direction = meta.get('direction', 'positive')
 
-        for symbol in symbols:
-            try:
-                factors = self.ff.calculate_all_factors(symbol, trade_date)
-                value = factors.get(factor_name, 0)
+        panel = self.ff.calculate_factor_panel(symbols, trade_date)
+        if panel.empty or factor_name not in panel.columns:
+            return pd.DataFrame()
 
-                if value != 0:  # 只保留非零值
-                    rows.append({
-                        '股票代码': symbol,
-                        '因子值': value,
-                    })
-            except Exception as e:
+        rows = []
+        for symbol in symbols:
+            if symbol not in panel.index:
                 continue
+            value = panel.loc[symbol, factor_name]
+            if pd.notna(value) and value != 0:
+                rows.append({
+                    '股票代码': symbol,
+                    '因子值': float(value),
+                })
 
         if not rows:
             return pd.DataFrame()
@@ -233,16 +234,22 @@ class FactorPresenter:
         Returns:
             DataFrame，宽表格式
         """
+        panel = self.ff.calculate_factor_panel(symbols, trade_date)
+        if panel.empty:
+            return pd.DataFrame()
+
         rows = []
         for symbol in symbols:
-            try:
-                factors = self.ff.calculate_all_factors(symbol, trade_date)
-                row = {'股票代码': symbol}
-                for fname in factor_names:
-                    row[fname] = factors.get(fname, 0)
-                rows.append(row)
-            except Exception as e:
+            if symbol not in panel.index:
                 continue
+            row = {'股票代码': symbol}
+            for fname in factor_names:
+                if fname in panel.columns:
+                    value = panel.loc[symbol, fname]
+                    row[fname] = float(value) if pd.notna(value) else 0
+                else:
+                    row[fname] = 0
+            rows.append(row)
 
         if not rows:
             return pd.DataFrame()
@@ -398,20 +405,23 @@ class FactorPresenter:
         Returns:
             {股票代码: {因子名: 因子值, ...}, ...}
         """
-        results = {}
+        panel = self.ff.calculate_factor_panel(symbols, trade_date)
+        results: Dict[str, Dict] = {}
         total = len(symbols)
 
         for i, symbol in enumerate(symbols):
-            try:
-                factors = self.ff.calculate_all_factors(symbol, trade_date)
-                results[symbol] = factors
-
-                if progress_callback:
-                    progress_callback(i + 1, total)
-            except Exception as e:
+            if symbol in panel.index:
+                factor_row = panel.loc[symbol].to_dict()
+                factor_row.pop('trade_date', None)
+                results[symbol] = {
+                    key: float(value)
+                    for key, value in factor_row.items()
+                    if pd.notna(value)
+                }
+            else:
                 results[symbol] = {}
-                if progress_callback:
-                    progress_callback(i + 1, total)
+            if progress_callback:
+                progress_callback(i + 1, total)
 
         return results
 

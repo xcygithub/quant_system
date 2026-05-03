@@ -27,6 +27,7 @@ class FactorSignalGenerator:
         self,
         factor_weights: Dict[str, float] = None,
         ic_weights: Dict[str, float] = None,
+        factor_directions: Dict[str, int] = None,
         use_ic_weighted: bool = True,
         buy_threshold: float = 80.0,  # 百分位 > 80 买入
         sell_threshold: float = 20.0  # 百分位 < 20 卖出
@@ -43,9 +44,15 @@ class FactorSignalGenerator:
         """
         self.base_weights = factor_weights or {}
         self.ic_weights = ic_weights or {}
+        self.factor_directions = factor_directions or self._infer_factor_directions(self.base_weights)
         self.use_ic_weighted = use_ic_weighted
         self.buy_threshold = buy_threshold
         self.sell_threshold = sell_threshold
+
+    def _infer_factor_directions(self, factor_weights: Dict[str, float]) -> Dict[str, int]:
+        """根据配置的因子名称推断因子方向。"""
+        config = FactorSignalConfig(factor_weights=factor_weights)
+        return config.factor_directions
 
     def generate_signals(
         self,
@@ -184,6 +191,9 @@ class FactorSignalGenerator:
                 # 使用带索引的 rank，确保 symbol 与 rank 一一对应
                 rank = factor_values.rank(method="average").loc[symbol]
                 percentile = (rank - 1) / (len(factor_values) - 1) * 100
+                # 负向因子需要反转：值越小得分越高
+                if self.factor_directions.get(factor_name, 1) < 0:
+                    percentile = 100.0 - percentile
                 percentile_scores[symbol][factor_name] = percentile
 
         return percentile_scores
@@ -346,6 +356,7 @@ def create_signal_generator(
     return FactorSignalGenerator(
         factor_weights=weights,
         ic_weights=ic_weights,
+        factor_directions=config.get('directions'),
         use_ic_weighted=use_ic_weighted,
         buy_threshold=config.get('buy_threshold', 80.0),
         sell_threshold=config.get('sell_threshold', 20.0)

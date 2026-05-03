@@ -5,15 +5,18 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
+import sqlite3
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 
 from strategy.fundamental_factors import FundamentalFactors
-from portfolio.watchlist import WatchlistManager
+from portfolio.watchlist import WatchlistManager, filter_out_benchmark_stocks, filter_out_benchmark_symbols
 from data.data_manager import DataManager
+from data.factor_manager import FactorManager
 from web.factor_presenter import FactorPresenter
+from web.services.backtest_service import load_backtest_stock_data
 
 
 # =============================================================================
@@ -83,6 +86,14 @@ def _init_factor_session_state():
         st.session_state.factor_last_query_date = None
     if 'factor_last_report_date' not in st.session_state:
         st.session_state.factor_last_report_date = None
+    if 'factor_prepare_last_run' not in st.session_state:
+        st.session_state.factor_prepare_last_run = None
+    if 'factor_prepare_last_status' not in st.session_state:
+        st.session_state.factor_prepare_last_status = None
+    if 'factor_prepare_last_message' not in st.session_state:
+        st.session_state.factor_prepare_last_message = None
+    if 'factor_delete_confirm_pending' not in st.session_state:
+        st.session_state.factor_delete_confirm_pending = False
 
 
 # =============================================================================
@@ -90,73 +101,225 @@ def _init_factor_session_state():
 # =============================================================================
 
 def _render_calc_section(dm: DataManager, wl_manager: WatchlistManager):
-    """渲染因子计算区域"""
-    _render_subsection_title("因子计算", "📊", "批量计算与导出当前股票池因子数据")
+    """渲染因子准备区域"""
+    _render_subsection_title("因子数据准备", "🧰", "为多因子回测批量准备因子值并写入缓存")
 
     # 获取自选股列表
-    watchlist = wl_manager.get_all_stocks()
+    watchlist = filter_out_benchmark_stocks(wl_manager.get_all_stocks())
     watchlist_df = pd.DataFrame(watchlist) if watchlist else pd.DataFrame()
-    date_options = _get_factor_date_options()
-    default_option = st.session_state.factor_query_date_option
-    default_index = date_options.index(default_option) if default_option in date_options else 0
-    selected_date_option = st.selectbox(
-        "计算日期",
-        options=date_options,
-        index=default_index,
-        help="可选择最新（自动映射）或指定财报截止日期"
-    )
-    st.session_state.factor_query_date_option = selected_date_option
-
-    # 计算按钮
     col1, col2 = st.columns(2)
-
     with col1:
-        calc_watchlist_disabled = watchlist_df.empty
-        if st.button("🚀 一键计算自选股因子",
-                     disabled=calc_watchlist_disabled,
-                     use_container_width=True):
-            if not watchlist_df.empty:
-                with st.spinner("正在计算自选股因子..."):
-                    _calculate_watchlist_factors(watchlist_df, wl_manager, selected_date_option)
-                st.success(f"完成！已计算 {len(watchlist_df)} 只股票")
-
+        start_date = st.date_input("回测开始日期", value=pd.to_datetime("2023-01-01"), key="factor_prepare_start_date")
     with col2:
-        if st.button("📥 导出因子数据",
-                     use_container_width=True,
-                     disabled=not st.session_state.factor_calc_results):
-            _export_factors_csv()
-            st.info("因子数据已导出")
+        end_date = st.date_input("回测结束日期", value=datetime.now().date(), key="factor_prepare_end_date")
 
-    # 计算进度显示
-    if st.session_state.factor_last_calc_time:
-        st.caption(f"最后计算时间: {st.session_state.factor_last_calc_time}")
-    if st.session_state.factor_last_query_date and st.session_state.factor_last_report_date:
-        st.caption(
-            f"查询日期: {st.session_state.factor_last_query_date} | "
-            f"实际财报截止日期: {st.session_state.factor_last_report_date}"
-        )
+    action_col1, action_col2 = st.columns(2)
+    with action_col1:
+        can_prepare = not watchlist_df.empty
+        if st.button("🛠️ 准备因子数据", use_container_width=True, disabled=not can_prepare):
+            if start_date > end_date:
+                st.error("开始日期不能晚于结束日期")
+                return
+            missing_symbols, required_report_date = _check_financial_coverage_before_prepare(
+                dm=dm,
+                symbols=watchlist_df["symbol"].tolist(),
+                asof_date=start_date.strftime("%Y-%m-%d"),
+            )
+            if missing_symbols:
+                preview = "、".join(missing_symbols[:8])
+                tail = "" if len(missing_symbols) <= 8 else f" 等 {len(missing_symbols)} 只"
+                st.error(
+                    f"财务数据覆盖不足：回测起始日需要报告期 <= {required_report_date}，"
+                    f"以下股票缺少必要财务数据：{preview}{tail}。请先到「财务数据管理」更新后再准备因子。"
+                )
+                return
+            with st.spinner("正在准备因子数据..."):
+                prepared_rows, message = _prepare_factor_data_for_backtest(
+                    dm=dm,
+                    symbols=watchlist_df["symbol"].tolist(),
+                    start_date=start_date.strftime("%Y-%m-%d"),
+                    end_date=end_date.strftime("%Y-%m-%d"),
+                )
+            st.session_state.factor_prepare_last_run = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            st.session_state.factor_prepare_last_status = "success" if prepared_rows > 0 else "failed"
+            st.session_state.factor_prepare_last_message = message
+            if prepared_rows > 0:
+                st.success(f"因子数据准备完成：写入 {prepared_rows} 条记录。")
+            else:
+                st.error(message)
+        if not can_prepare:
+            st.caption("当前无自选股，无法准备因子数据。")
 
-    # 计算结果统计
-    if st.session_state.factor_calc_results:
-        results = st.session_state.factor_calc_results
-        total_stocks = len(results)
-        valid_stocks = sum(1 for r in results.values() if r)
+    with action_col2:
+        if st.button("🗑️ 删除所有因子数据", use_container_width=True, type="secondary"):
+            st.session_state.factor_delete_confirm_pending = True
 
-        st.markdown("---")
-        st.markdown(f"""
-        **计算结果统计:**
-        - 股票数量: {total_stocks}
-        - 有效数据: {valid_stocks}
-        - 缺失数据: {total_stocks - valid_stocks}
-        """)
+        if st.session_state.factor_delete_confirm_pending:
+            st.warning("确认要删除所有因子数据吗？此操作不可撤销。")
+            confirm_col, cancel_col = st.columns(2)
+            with confirm_col:
+                if st.button("✅ 确认删除", use_container_width=True, key="confirm_delete_factor_values_btn"):
+                    deleted_rows = _delete_all_factor_values(dm)
+                    st.session_state.factor_prepare_last_run = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    st.session_state.factor_prepare_last_status = "success"
+                    st.session_state.factor_prepare_last_message = f"已删除 factor_values 共 {deleted_rows} 条记录"
+                    st.session_state.factor_calc_results = {}
+                    st.session_state.factor_delete_confirm_pending = False
+                    st.success(st.session_state.factor_prepare_last_message)
+            with cancel_col:
+                if st.button("❎ 取消", use_container_width=True, key="cancel_delete_factor_values_btn"):
+                    st.session_state.factor_delete_confirm_pending = False
 
-        # 显示已计算的股票列表
-        with st.expander("查看已计算股票"):
-            calc_stocks = list(results.keys())
-            # 每行显示4只股票
-            for i in range(0, len(calc_stocks), 4):
-                row_stocks = calc_stocks[i:i+4]
-                st.text("  ".join(row_stocks))
+    if st.session_state.factor_prepare_last_run:
+        st.caption(f"最近准备时间: {st.session_state.factor_prepare_last_run}")
+    if st.session_state.factor_prepare_last_message:
+        status = st.session_state.factor_prepare_last_status
+        label = "状态：成功" if status == "success" else "状态：失败"
+        st.caption(f"{label} | {st.session_state.factor_prepare_last_message}")
+
+
+def _prepare_factor_data_for_backtest(
+    dm: DataManager,
+    symbols: List[str],
+    start_date: str,
+    end_date: str,
+) -> tuple[int, str]:
+    """按回测区间准备因子数据并写入 factor_values。"""
+    stock_data = load_backtest_stock_data(dm.db_path, symbols, start_date, end_date)
+    if not stock_data:
+        return 0, "未获取到可用行情数据，请先更新行情库。"
+
+    ff = FundamentalFactors(dm.db_path)
+    factor_mgr = FactorManager(dm.db_path)
+    fp = FactorPresenter()
+    rows = []
+
+    try:
+        factor_categories = fp.get_factor_list_by_category()
+        factor_names = []
+        for factors in factor_categories.values():
+            for factor_name, _ in factors:
+                factor_names.append(factor_name)
+        factor_names = sorted(set(factor_names))
+        if not factor_names:
+            return 0, "未找到可用因子元数据。"
+
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        total_symbols = len(stock_data)
+
+        for idx, (symbol, df) in enumerate(stock_data.items(), start=1):
+            date_series = pd.to_datetime(df["date"]).dt.strftime("%Y-%m-%d") if "date" in df.columns else df.index.astype(str)
+            for trade_date in date_series:
+                values = ff.calculate_all_factors(symbol, trade_date)
+                report_date = ff.get_report_date(trade_date, symbol)
+                report_pub_date = ff.get_report_publish_date(symbol, report_date)
+                for factor_name in factor_names:
+                    if factor_name not in values:
+                        continue
+                    value = values.get(factor_name)
+                    if pd.isna(value):
+                        continue
+                    rows.append(
+                        {
+                            "symbol": symbol,
+                            "trade_date": trade_date,
+                            "factor_name": factor_name,
+                            "factor_value": float(value),
+                            "value_source": "prepare_task",
+                            "is_imputed": 0,
+                            "quality_flag": "ok",
+                            "asof_trade_date": trade_date,
+                            "source_report_date": report_date,
+                            "source_pub_date": report_pub_date,
+                        }
+                    )
+            progress = int((idx / max(1, total_symbols)) * 100)
+            progress_bar.progress(progress / 100)
+            status_text.text(f"准备中: {symbol} ({idx}/{total_symbols})")
+
+        progress_bar.empty()
+        status_text.empty()
+        if not rows:
+            return 0, "准备完成但未产生可写入记录。"
+        saved = factor_mgr.save_factor_values(pd.DataFrame(rows))
+        return saved, f"覆盖股票 {len(stock_data)} 只，区间 {start_date} ~ {end_date}"
+    finally:
+        fp.close()
+        ff.close()
+
+
+def _infer_required_report_date(asof_date: str) -> str:
+    """
+    根据回测起始日推断最低应可用报告期。
+
+    规则与因子侧一致：
+    - 1~4月：上年Q3
+    - 5~8月：当年Q1
+    - 9~10月：当年Q2
+    - 11~12月：当年Q3
+    """
+    dt = pd.to_datetime(asof_date)
+    y = dt.year
+    m = dt.month
+    if m <= 4:
+        return f"{y - 1}-09-30"
+    if m <= 8:
+        return f"{y}-03-31"
+    if m <= 10:
+        return f"{y}-06-30"
+    return f"{y}-09-30"
+
+
+def _check_financial_coverage_before_prepare(
+    dm: DataManager,
+    symbols: List[str],
+    asof_date: str,
+) -> tuple[List[str], str]:
+    """
+    准备因子前检查财务覆盖：
+    每只股票在 required_report_date 之前，至少应有利润表与资产负债表记录。
+    """
+    required_report_date = _infer_required_report_date(asof_date)
+    missing_symbols: List[str] = []
+
+    conn = sqlite3.connect(dm.db_path)
+    try:
+        for symbol in symbols:
+            profit_row = conn.execute(
+                """
+                SELECT MAX(report_date) FROM profit_data
+                WHERE symbol = ? AND report_date <= ?
+                """,
+                (symbol, required_report_date),
+            ).fetchone()
+            balance_row = conn.execute(
+                """
+                SELECT MAX(report_date) FROM balance_data
+                WHERE symbol = ? AND report_date <= ?
+                """,
+                (symbol, required_report_date),
+            ).fetchone()
+            if not (profit_row and profit_row[0]) or not (balance_row and balance_row[0]):
+                missing_symbols.append(symbol)
+    finally:
+        conn.close()
+
+    return missing_symbols, required_report_date
+
+
+def _delete_all_factor_values(dm: DataManager) -> int:
+    """删除 factor_values 全表数据。"""
+    conn = sqlite3.connect(dm.db_path)
+    try:
+        cursor = conn.cursor()
+        row = cursor.execute("SELECT COUNT(1) FROM factor_values").fetchone()
+        total = int(row[0]) if row else 0
+        cursor.execute("DELETE FROM factor_values")
+        conn.commit()
+        return total
+    finally:
+        conn.close()
 
 
 def _calculate_watchlist_factors(watchlist_df: pd.DataFrame,
@@ -174,31 +337,42 @@ def _calculate_watchlist_factors(watchlist_df: pd.DataFrame,
     progress_bar = st.progress(0)
     status_text = st.empty()
 
-    for i, symbol in enumerate(symbols):
-        try:
-            factors = ff.calculate_all_factors(symbol, query_date)
-            # 只保存非零因子
-            valid_factors = {k: v for k, v in factors.items() if v != 0}
-            results[symbol] = valid_factors
+    def on_progress(current: int, total: int):
+        progress_bar.progress(current / total)
+        current_symbol = symbols[current - 1] if 0 < current <= len(symbols) else ""
+        status_text.text(f"计算中: {current_symbol} ({current}/{total})")
 
-            # 同时保存到数据库
-            if valid_factors:
-                rows = []
-                for fname, fvalue in valid_factors.items():
-                    rows.append({
-                        'symbol': symbol,
-                        'factor_name': fname,
-                        'factor_value': fvalue
-                    })
-                df = pd.DataFrame(rows)
-                ff.save_factor_values(df, report_date)
+    results = fp.calculate_watchlist_factors(
+        symbols=symbols,
+        trade_date=query_date,
+        progress_callback=on_progress
+    )
 
-        except Exception as e:
-            results[symbol] = {}
+    rows = []
+    for symbol, valid_factors in results.items():
+        if not valid_factors:
+            continue
+        for fname, fvalue in valid_factors.items():
+            rows.append({
+                'symbol': symbol,
+                'factor_name': fname,
+                'factor_value': fvalue
+            })
 
-        progress = (i + 1) / len(symbols)
-        progress_bar.progress(progress)
-        status_text.text(f"计算中: {symbol} ({i+1}/{len(symbols)})")
+    if rows:
+        # 统一走 FactorManager 写入口，保持写库语义一致
+        factor_mgr = FactorManager(ff.fdm.db_path)
+        save_df = pd.DataFrame(rows)
+        save_df["trade_date"] = query_date
+        save_df["value_source"] = "analysis_ui"
+        save_df["is_imputed"] = 0
+        save_df["quality_flag"] = "ok"
+        save_df["asof_trade_date"] = query_date
+        report_map = {s: ff.get_report_date(query_date, s) for s in symbols}
+        pub_map = {s: ff.get_report_publish_date(s, report_map[s]) for s in symbols if s in report_map}
+        save_df["source_report_date"] = save_df["symbol"].map(report_map).fillna(report_date)
+        save_df["source_pub_date"] = save_df["symbol"].map(pub_map).fillna("")
+        factor_mgr.save_factor_values(save_df)
 
     progress_bar.empty()
     status_text.empty()
@@ -275,7 +449,7 @@ def _render_display_section(dm: DataManager, wl_manager: WatchlistManager):
 def _render_single_stock_view(dm: DataManager, wl_manager: WatchlistManager):
     """单股因子查询视图"""
     # 股票选择
-    watchlist = wl_manager.get_all_stocks()
+    watchlist = filter_out_benchmark_stocks(wl_manager.get_all_stocks())
     watchlist_df = pd.DataFrame(watchlist) if watchlist else pd.DataFrame()
 
     if watchlist_df.empty:
@@ -336,6 +510,7 @@ def _render_single_stock_view(dm: DataManager, wl_manager: WatchlistManager):
     # 创建因子选择UI
     tabs = st.tabs(list(factor_categories.keys()))
 
+    metadata_all = fp._get_factor_metadata()
     for tab, (category, factors) in zip(tabs, factor_categories.items()):
         with tab:
             if not factors:
@@ -353,7 +528,7 @@ def _render_single_stock_view(dm: DataManager, wl_manager: WatchlistManager):
                         formatted = fp.format_factor_value(fname, value)
 
                         # 获取因子元数据
-                        metadata = fp._get_factor_metadata().get(fname, {})
+                        metadata = metadata_all.get(fname, {})
                         direction = metadata.get('direction', 'neutral')
 
                         # 颜色标识
@@ -406,7 +581,7 @@ def _render_single_stock_view(dm: DataManager, wl_manager: WatchlistManager):
 def _render_multi_stock_ranking_view(dm: DataManager, wl_manager: WatchlistManager):
     """多股因子排名视图"""
     # 股票多选
-    watchlist = wl_manager.get_all_stocks()
+    watchlist = filter_out_benchmark_stocks(wl_manager.get_all_stocks())
     watchlist_df = pd.DataFrame(watchlist) if watchlist else pd.DataFrame()
 
     if watchlist_df.empty:
@@ -419,6 +594,7 @@ def _render_multi_stock_ranking_view(dm: DataManager, wl_manager: WatchlistManag
         default=watchlist_df['symbol'].tolist()[:5],
         format_func=lambda x: f"{x} - {watchlist_df[watchlist_df['symbol']==x].iloc[0].get('name', x) if len(watchlist_df[watchlist_df['symbol']==x]) > 0 else x}"
     )
+    selected_stocks = filter_out_benchmark_symbols(selected_stocks)
 
     if not selected_stocks:
         st.info("请选择至少一只股票")
@@ -523,7 +699,7 @@ def _render_multi_stock_ranking_view(dm: DataManager, wl_manager: WatchlistManag
 
 def _get_stock_name_from_symbol(symbol: str, wl_manager: WatchlistManager) -> str:
     """从自选股管理器获取股票名称"""
-    watchlist = wl_manager.get_all_stocks()
+    watchlist = filter_out_benchmark_stocks(wl_manager.get_all_stocks())
     for stock in watchlist:
         if stock.get('symbol') == symbol:
             return stock.get('name', symbol)

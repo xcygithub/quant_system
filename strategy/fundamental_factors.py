@@ -8,13 +8,17 @@ from typing import Dict, List, Optional, Tuple
 from datetime import datetime
 import sqlite3
 import warnings
+import logging
 warnings.filterwarnings('ignore')
+logger = logging.getLogger(__name__)
 
 try:
     from data.financial_data_manager import FinancialDataManager
+    from data.factor_manager import FactorManager
 except ImportError:
     # 如果是相对导入失败，尝试绝对导入
     from quant_system.data.financial_data_manager import FinancialDataManager
+    from quant_system.data.factor_manager import FactorManager
 
 
 class FundamentalFactors:
@@ -80,6 +84,83 @@ class FundamentalFactors:
         """
         self.fdm = FinancialDataManager(db_path)
 
+    def _get_disclosure_cutoff_date(self, trade_date: str) -> str:
+        """
+        根据交易日推断理论可用的财报截止日期。
+
+        口径（A股）：
+        - 1~4 月：上年 Q3
+        - 5~8 月：当年 Q1
+        - 9~10 月：当年 Q2
+        - 11~12 月：当年 Q3
+        """
+        trade_dt = pd.to_datetime(trade_date)
+        year = trade_dt.year
+        month = trade_dt.month
+        if month <= 4:
+            return f"{year - 1}-09-30"
+        if month <= 8:
+            return f"{year}-03-31"
+        if month <= 10:
+            return f"{year}-06-30"
+        return f"{year}-09-30"
+
+    def _clip_financial_df_by_report_date(self, df: pd.DataFrame, report_date: str) -> pd.DataFrame:
+        """按 report_date 截断财务 DataFrame。"""
+        if df is None or df.empty:
+            return pd.DataFrame()
+        if "report_date" not in df.columns:
+            return df
+        clipped = df.copy()
+        clipped["report_date"] = pd.to_datetime(clipped["report_date"], errors="coerce")
+        cutoff = pd.to_datetime(report_date, errors="coerce")
+        clipped = clipped[clipped["report_date"] <= cutoff]
+        if clipped.empty:
+            return pd.DataFrame()
+        return clipped.sort_values("report_date", ascending=False).reset_index(drop=True)
+
+    def _previous_quarter_end(self, report_date: str) -> str:
+        """获取上一季度报告期。"""
+        report_dt = pd.to_datetime(report_date)
+        month_map = {
+            3: (report_dt.year - 1, 12, 31),
+            6: (report_dt.year, 3, 31),
+            9: (report_dt.year, 6, 30),
+            12: (report_dt.year, 9, 30),
+        }
+        year, month, day = month_map.get(report_dt.month, (report_dt.year - 1, 12, 31))
+        return f"{year:04d}-{month:02d}-{day:02d}"
+
+    def get_report_publish_date(self, symbol: str, report_date: str, lag_days: int = 45) -> str:
+        """
+        获取报告期对应的可用发布日期。
+
+        优先使用 profit_data.pub_date；若无，则退化为 report_date + lag_days。
+        """
+        try:
+            conn = sqlite3.connect(self.fdm.db_path)
+            row = conn.execute(
+                """
+                SELECT pub_date FROM profit_data
+                WHERE symbol = ? AND report_date = ? AND pub_date IS NOT NULL AND TRIM(pub_date) != ''
+                ORDER BY pub_date DESC
+                LIMIT 1
+                """,
+                (symbol, report_date),
+            ).fetchone()
+            conn.close()
+            if row and row[0]:
+                pub_dt = pd.to_datetime(str(row[0]), errors="coerce")
+                if pd.notna(pub_dt):
+                    return pub_dt.strftime("%Y-%m-%d")
+        except Exception:
+            pass
+
+        fallback_dt = pd.to_datetime(report_date, errors="coerce")
+        if pd.isna(fallback_dt):
+            fallback_dt = pd.to_datetime("2015-03-31")
+        return (fallback_dt + pd.Timedelta(days=lag_days)).strftime("%Y-%m-%d")
+
     def _get_latest_report_date_from_db(self, trade_date: str, symbol: str = None) -> Optional[str]:
         """
         从数据库中获取查询日期之前最新可用的财报截止日期。
@@ -130,18 +211,40 @@ class FundamentalFactors:
         Returns:
             财报截止日期，格式 YYYY-MM-DD
         """
-        # 1) 优先使用数据库里已落地的财报日期（更贴近真实数据可用性）
+        # 1) 优先按披露窗口推断截止日，再在库里找 <= 截止日的最近财报
+        #    重点：1~4月默认优先上年Q3，避免年报未披露时因子大面积为0。
+        cutoff_date = self._get_disclosure_cutoff_date(trade_date)
+        latest_report_date = self._get_latest_report_date_from_db(cutoff_date, symbol)
+        if latest_report_date:
+            # 严格防止前视：若该报告尚未披露，回退到上一季度
+            if symbol:
+                trade_dt = pd.to_datetime(trade_date)
+                guard = 0
+                while latest_report_date and guard < 16:
+                    pub_date = self.get_report_publish_date(symbol, latest_report_date, lag_days=lag_days)
+                    pub_dt = pd.to_datetime(pub_date, errors="coerce")
+                    if pd.notna(pub_dt) and pub_dt <= trade_dt:
+                        break
+                    latest_report_date = self._previous_quarter_end(latest_report_date)
+                    guard += 1
+            return latest_report_date
+
+        # 2) 若该股票无数据，再尝试全市场维度
+        if symbol:
+            latest_report_date = self._get_latest_report_date_from_db(cutoff_date, None)
+            if latest_report_date:
+                return latest_report_date
+
+        # 3) 再放宽到“交易日前最近财报”
         latest_report_date = self._get_latest_report_date_from_db(trade_date, symbol)
         if latest_report_date:
             return latest_report_date
-
-        # 2) 若该股票无数据，再尝试全市场维度的可用财报日期
         if symbol:
             latest_report_date = self._get_latest_report_date_from_db(trade_date, None)
             if latest_report_date:
                 return latest_report_date
 
-        # 3) 最后兜底：使用固定滞后规则推断
+        # 4) 最后兜底：使用固定滞后规则推断
         trade_dt = pd.to_datetime(trade_date)
         earliest_year = 2015
         latest_year = trade_dt.year + 1
@@ -221,6 +324,10 @@ class FundamentalFactors:
                 return float(df['close'].iloc[0])
         except Exception as e:
             conn.close()
+            logger.warning(
+                "读取价格失败: symbol=%s trade_date=%s error_type=%s error=%s",
+                symbol, trade_date, type(e).__name__, e
+            )
 
         # 如果没有K线数据，尝试从估值数据估算
         valuation = self.fdm.get_valuation(symbol)
@@ -230,10 +337,89 @@ class FundamentalFactors:
                 if shares > 0:
                     market_cap = float(valuation['market_cap'])
                     return market_cap / shares
-            except:
-                pass
+            except Exception as e:
+                logger.debug(
+                    "估值换算价格失败: symbol=%s error_type=%s error=%s",
+                    symbol, type(e).__name__, e
+                )
 
         return 0.0
+
+    def _fetch_table_by_symbols(
+        self,
+        conn: sqlite3.Connection,
+        table_name: str,
+        symbols: List[str],
+        date_col: str,
+        end_date: str
+    ) -> Dict[str, pd.DataFrame]:
+        """批量读取某张表在指定日期前的数据，并按 symbol 分组。"""
+        if not symbols:
+            return {}
+
+        placeholders = ','.join(['?' for _ in symbols])
+        query = f"""
+            SELECT * FROM {table_name}
+            WHERE symbol IN ({placeholders}) AND {date_col} <= ?
+            ORDER BY symbol, {date_col} DESC
+        """
+        params = symbols + [end_date]
+        df = pd.read_sql_query(query, conn, params=params)
+        if df.empty:
+            return {}
+        return {symbol: group.copy() for symbol, group in df.groupby('symbol')}
+
+    def _fetch_latest_valuation_by_symbols(
+        self,
+        conn: sqlite3.Connection,
+        symbols: List[str],
+        trade_date: str
+    ) -> Dict[str, Dict]:
+        """批量读取估值表在指定交易日前的最新一条记录。"""
+        if not symbols:
+            return {}
+        placeholders = ','.join(['?' for _ in symbols])
+        query = f"""
+            SELECT v1.*
+            FROM valuation_data v1
+            WHERE v1.symbol IN ({placeholders})
+              AND v1.trade_date = (
+                  SELECT MAX(v2.trade_date)
+                  FROM valuation_data v2
+                  WHERE v2.symbol = v1.symbol AND v2.trade_date <= ?
+              )
+        """
+        params = symbols + [trade_date]
+        df = pd.read_sql_query(query, conn, params=params)
+        if df.empty:
+            return {}
+        return {row['symbol']: row.to_dict() for _, row in df.iterrows()}
+
+    def _fetch_latest_price_by_symbols(
+        self,
+        conn: sqlite3.Connection,
+        symbols: List[str],
+        trade_date: str
+    ) -> Dict[str, float]:
+        """批量读取 K 线在指定交易日前的最新收盘价。"""
+        if not symbols:
+            return {}
+        placeholders = ','.join(['?' for _ in symbols])
+        query = f"""
+            SELECT k1.symbol, k1.close
+            FROM daily_kline k1
+            WHERE k1.symbol IN ({placeholders})
+              AND k1.date = (
+                  SELECT MAX(k2.date)
+                  FROM daily_kline k2
+                  WHERE k2.symbol = k1.symbol AND k2.date <= ?
+              )
+        """
+        params = symbols + [trade_date]
+        df = pd.read_sql_query(query, conn, params=params)
+        if df.empty:
+            return {}
+        return {row['symbol']: float(row['close']) for _, row in df.iterrows()}
 
     def _get_latest_value(self, df: pd.DataFrame, col: str, periods: int = 4) -> float:
         """
@@ -295,8 +481,11 @@ class FundamentalFactors:
 
                 if prior != 0 and not np.isnan(prior):
                     return (current / prior) - 1.0
-        except:
-            pass
+        except Exception as e:
+            logger.debug(
+                "同比增长率计算失败: col=%s error_type=%s error=%s",
+                col, type(e).__name__, e
+            )
 
         return 0.0
 
@@ -316,8 +505,11 @@ class FundamentalFactors:
                 value = float(value)
                 if value != 0 and not np.isnan(value):
                     return value
-        except:
-            pass
+        except Exception as e:
+            logger.debug(
+                "最新非零值计算失败: col=%s error_type=%s error=%s",
+                col, type(e).__name__, e
+            )
         return 0.0
 
     def _calc_valuation_factors(self, price: float, valuation: Dict = None,
@@ -377,7 +569,11 @@ class FundamentalFactors:
                 if equity and equity > 0:
                     factors['roe'] = net_profit / equity
                     factors['roe_avg'] = factors['roe']
-            except:
+            except Exception as e:
+                logger.warning(
+                    "盈利因子计算失败: factor=roe error_type=%s error=%s",
+                    type(e).__name__, e
+                )
                 factors['roe'] = 0.0
                 factors['roe_avg'] = 0.0
         else:
@@ -496,8 +692,11 @@ class FundamentalFactors:
             if start_value > 0 and end_value > 0 and n_years > 0:
                 cagr = (end_value / start_value) ** (1 / n_years) - 1
                 return float(cagr)
-        except:
-            pass
+        except Exception as e:
+            logger.debug(
+                "CAGR 计算失败: col=%s error_type=%s error=%s",
+                col, type(e).__name__, e
+            )
 
         return 0.0
 
@@ -560,7 +759,11 @@ class FundamentalFactors:
                         factors['cash_to_profit'] = oper_cf / net_profit
                     else:
                         factors['cash_to_profit'] = 0.0
-                except:
+                except Exception as e:
+                    logger.warning(
+                        "现金流因子计算失败: factor=cash_to_profit error_type=%s error=%s",
+                        type(e).__name__, e
+                    )
                     factors['cash_to_profit'] = 0.0
         else:
             factors['cash_to_profit'] = 0.0
@@ -600,23 +803,55 @@ class FundamentalFactors:
         Returns:
             DataFrame(index=symbol, columns=因子名)
         """
+        return self.calculate_factor_panel(symbols, trade_date)
+
+    def calculate_factor_panel(self, symbols: List[str], trade_date: str = None) -> pd.DataFrame:
+        """
+        批量计算因子面板（按 symbols + 日期批量读取，避免逐股 N+1 查询）。
+        """
+        if not symbols:
+            return pd.DataFrame()
         if trade_date is None:
             trade_date = datetime.now().strftime('%Y-%m-%d')
 
+        conn = sqlite3.connect(self.fdm.db_path)
+        try:
+            # 先拉取到 trade_date，再按股票逐只按 report_date 截断
+            profit_map = self._fetch_table_by_symbols(conn, 'profit_data', symbols, 'report_date', trade_date)
+            balance_map = self._fetch_table_by_symbols(conn, 'balance_data', symbols, 'report_date', trade_date)
+            cash_map = self._fetch_table_by_symbols(conn, 'cash_flow_data', symbols, 'report_date', trade_date)
+            dupont_map = self._fetch_table_by_symbols(conn, 'dupont_data', symbols, 'report_date', trade_date)
+            growth_map = self._fetch_table_by_symbols(conn, 'growth_data', symbols, 'report_date', trade_date)
+            valuation_map = self._fetch_latest_valuation_by_symbols(conn, symbols, trade_date)
+            price_map = self._fetch_latest_price_by_symbols(conn, symbols, trade_date)
+        finally:
+            conn.close()
+
         rows = []
+        empty_df = pd.DataFrame()
         for symbol in symbols:
-            try:
-                factors = self.calculate_all_factors(symbol, trade_date)
-                factors['symbol'] = symbol
-                factors['trade_date'] = trade_date
-                rows.append(factors)
-            except Exception as e:
-                print(f"计算 {symbol} 因子失败: {e}")
-                continue
+            report_date = self.get_report_date(trade_date, symbol)
+            profit = self._clip_financial_df_by_report_date(profit_map.get(symbol, empty_df), report_date)
+            balance = self._clip_financial_df_by_report_date(balance_map.get(symbol, empty_df), report_date)
+            cash_flow = self._clip_financial_df_by_report_date(cash_map.get(symbol, empty_df), report_date)
+            dupont = self._clip_financial_df_by_report_date(dupont_map.get(symbol, empty_df), report_date)
+            growth = self._clip_financial_df_by_report_date(growth_map.get(symbol, empty_df), report_date)
+            valuation = valuation_map.get(symbol, {})
+            price = price_map.get(symbol, 0.0)
+
+            factors: Dict[str, float] = {}
+            factors.update(self._calc_valuation_factors(price, valuation, profit))
+            factors.update(self._calc_profitability_factors(profit, balance, dupont))
+            factors.update(self._calc_growth_factors(profit, balance, growth))
+            factors.update(self._calc_structure_factors(balance))
+            factors.update(self._calc_cashflow_factors(cash_flow, profit, valuation))
+            factors.update(self._calc_derived_factors(factors, dupont))
+            factors['symbol'] = symbol
+            factors['trade_date'] = trade_date
+            rows.append(factors)
 
         if not rows:
             return pd.DataFrame()
-
         df = pd.DataFrame(rows)
         df.set_index('symbol', inplace=True)
         return df
@@ -656,12 +891,19 @@ class FundamentalFactors:
 
         try:
             df = pd.read_sql_query(query, conn, params=params)
+            return df
         except Exception as e:
-            print(f"读取因子缓存失败: {e}")
-            df = pd.DataFrame()
-
-        conn.close()
-        return df
+            logger.warning(
+                "读取因子缓存失败: symbols_count=%s factor_names_count=%s trade_date=%s error_type=%s error=%s",
+                len(symbols) if symbols else 0,
+                len(factor_names) if factor_names else 0,
+                trade_date,
+                type(e).__name__,
+                e
+            )
+            return pd.DataFrame()
+        finally:
+            conn.close()
 
     def save_factor_values(self, df: pd.DataFrame, trade_date: str = None) -> int:
         """
@@ -680,29 +922,18 @@ class FundamentalFactors:
         if trade_date is None:
             trade_date = datetime.now().strftime('%Y-%m-%d')
 
-        conn = sqlite3.connect(self.fdm.db_path)
-        cursor = conn.cursor()
+        work_df = df.copy()
+        if "trade_date" not in work_df.columns:
+            work_df["trade_date"] = trade_date
+        if "factor_name" not in work_df.columns and "factor" in work_df.columns:
+            work_df["factor_name"] = work_df["factor"]
+        if "factor_value" not in work_df.columns and "value" in work_df.columns:
+            work_df["factor_value"] = work_df["value"]
+        if "factor_value" in work_df.columns:
+            work_df["factor_value"] = pd.to_numeric(work_df["factor_value"], errors="coerce")
 
-        records = 0
-        for _, row in df.iterrows():
-            try:
-                cursor.execute('''
-                    INSERT OR REPLACE INTO factor_values
-                    (symbol, trade_date, factor_name, factor_value, update_time)
-                    VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
-                ''', (
-                    row.get('symbol', ''),
-                    trade_date,
-                    row.get('factor_name', row.get('factor', '')),
-                    row.get('factor_value', row.get('value', 0)),
-                ))
-                records += 1
-            except Exception as e:
-                continue
-
-        conn.commit()
-        conn.close()
-        return records
+        manager = FactorManager(self.fdm.db_path)
+        return manager.save_factor_values(work_df)
 
     def close(self):
         """关闭连接"""
@@ -712,7 +943,7 @@ class FundamentalFactors:
         """析构时确保关闭"""
         try:
             self.close()
-        except:
+        except Exception:
             pass
 
 

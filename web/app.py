@@ -11,9 +11,9 @@ from datetime import datetime, timedelta
 import atexit
 
 from data.data_manager import DataManager
-from portfolio.watchlist import WatchlistManager
+from portfolio.watchlist import WatchlistManager, filter_out_benchmark_stocks, filter_out_benchmark_symbols
 from portfolio.signal_scanner import SignalScanner, ScanResult, ScanSignal
-from web.factor_backtest_page import render_factor_backtest_page, FACTOR_CATEGORIES, DEFAULT_FACTORS
+from web.factor_backtest_page import render_factor_backtest_page
 from web.factor_analysis_page import render_factor_analysis_page
 from web.pages.data_management import render_data_management_page
 from web.services.backtest_service import (
@@ -401,15 +401,15 @@ def render_app_hero():
 render_app_hero()
 
 # 创建标签页
-# 7个标签页：自选股管理、策略回测、多因子回测、信号扫描、绩效分析、因子分析、财务数据管理
+# 7个标签页：自选股管理、策略回测、财务数据管理、因子分析、多因子回测、信号扫描、绩效分析
 tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
     "⭐ 自选股管理",
     "🎯 策略回测",
+    "📥 财务数据管理",
+    "🔬 因子分析",
     "📊 多因子回测",
     "📈 信号扫描",
-    "📉 绩效分析",
-    "🔬 因子分析",
-    "📥 财务数据管理"
+    "📉 绩效分析"
 ])
 
 # 辅助函数：获取最近交易日行情（仅从数据库读取，不触发网络更新）
@@ -1406,7 +1406,7 @@ with tab2:
             st.subheader("📊 股票选择（勾选参与回测）")
 
             # 获取自选股列表
-            all_watchlist_stocks = wl_manager.get_all_stocks()
+            all_watchlist_stocks = filter_out_benchmark_stocks(wl_manager.get_all_stocks())
 
             if all_watchlist_stocks:
                 # 初始化session_state中的选中状态
@@ -1440,16 +1440,16 @@ with tab2:
                 else:
                     st.warning("⚠️ 请至少选择一只股票")
             else:
-                st.info("暂无自选股，请先在【自选股管理】中添加")
+                st.info("暂无可回测自选股（默认指数已自动排除），请先添加股票")
 
             start_date = st.date_input("开始日期", value=pd.to_datetime("2023-01-01"))
-            end_date = st.date_input("结束日期", value=pd.to_datetime("2024-12-31"))
+            end_date = st.date_input("结束日期", value=datetime.now().date())
 
         with col2:
             st.subheader("🎯 策略选择")
             strategy_name = st.selectbox(
                 "选择策略",
-                ["均线交叉 (MA Cross)", "MACD", "布林带 (Bollinger Bands)", "RSI", "多因子 (Multi-Factor)"]
+                ["均线交叉 (MA Cross)", "MACD", "布林带 (Bollinger Bands)", "RSI"]
             )
 
             # 策略参数（非多因子策略）
@@ -1473,78 +1473,6 @@ with tab2:
                 strategy_params = {'period': period, 'oversold': oversold, 'overbought': overbought}
             else:
                 strategy_params = {}
-
-            # 多因子配置面板（当选择多因子时显示）
-            if strategy_name == "多因子 (Multi-Factor)":
-                st.divider()
-                st.markdown("**📊 因子配置**")
-
-                # 初始化session_state
-                if 'mf_backtest_factors' not in st.session_state:
-                    st.session_state.mf_backtest_factors = {}
-
-                # 因子选择
-                selected_factors = {}
-                for category, factors in FACTOR_CATEGORIES.items():
-                    with st.expander(f"☑️ {category}", expanded=True):
-                        default_selected = [f for f in DEFAULT_FACTORS.get(category, []) if f in factors]
-                        selected = st.multiselect(
-                            "选择因子",
-                            list(factors.keys()),
-                            default=default_selected,
-                            format_func=lambda x: factors[x],
-                            key=f"mf_factor_{category}"
-                        )
-                        for f in selected:
-                            selected_factors[f] = category
-
-                # 权重设置模式
-                weight_mode = st.radio(
-                    "权重模式",
-                    ["🤖 IC智能加权", "✏️ 手动设置"],
-                    index=0,
-                    horizontal=True,
-                    key="mf_weight_mode"
-                )
-
-                mf_factor_weights = {}
-                if weight_mode == "✏️ 手动设置":
-                    st.markdown("**因子权重**")
-                    cols = st.columns(2)
-                    factor_list = list(selected_factors.keys())
-                    for i, factor in enumerate(factor_list):
-                        with cols[i % 2]:
-                            category = selected_factors[factor]
-                            factor_display = FACTOR_CATEGORIES[category].get(factor, factor)
-                            w = st.slider(
-                                factor_display,
-                                0.0, 1.0, 0.2, 0.05,
-                                key=f"mf_weight_{factor}"
-                            )
-                            mf_factor_weights[factor] = w
-
-                    # 归一化
-                    if mf_factor_weights and sum(mf_factor_weights.values()) > 0:
-                        total = sum(mf_factor_weights.values())
-                        mf_factor_weights = {k: v/total for k, v in mf_factor_weights.items()}
-                        st.caption(f"权重已归一化 (总和={sum(mf_factor_weights.values()):.2%})")
-                else:
-                    # IC加权模式参数
-                    mf_ic_update_freq = st.slider(
-                        "IC更新频率（天）", 20, 120, 60, 10,
-                        key="mf_ic_update_freq"
-                    )
-                    mf_ic_lookback = st.slider(
-                        "IC历史窗口（天）", 60, 252, 120, 20,
-                        key="mf_ic_lookback"
-                    )
-                    # 生成等权基础权重
-                    mf_factor_weights = {f: 1.0/len(selected_factors) if selected_factors else 0 for f in selected_factors}
-
-                # 保存因子配置到session_state
-                st.session_state.mf_backtest_factors = selected_factors
-                st.session_state.mf_factor_weights = mf_factor_weights
-                st.session_state.mf_use_ic = (weight_mode == "🤖 IC智能加权")
 
         with col3:
             st.subheader("💰 资金参数")
@@ -1622,6 +1550,7 @@ with tab2:
                 strategy_params=strategy_params,
                 session_state=st.session_state,
             )
+            run_config["symbols"] = filter_out_benchmark_symbols(run_config.get("symbols", []))
 
             config_errors = validate_run_config(run_config)
             if config_errors:
@@ -1714,12 +1643,20 @@ with tab2:
                                     export_signals_to_csv=export_signals_to_csv,
                                 )
 
-# Tab 3: 多因子回测
+# Tab 3: 财务数据管理
 with tab3:
+    render_data_management_page()
+
+# Tab 4: 因子分析
+with tab4:
+    render_factor_analysis_page(dm, wl_manager)
+
+# Tab 5: 多因子回测
+with tab5:
     render_factor_backtest_page(dm, wl_manager)
 
-# Tab 4: 信号扫描
-with tab4:
+# Tab 6: 信号扫描
+with tab6:
     render_section_title("信号扫描", "📈", "按策略批量扫描买卖信号并导出结果")
 
     # 顶部控制面板
@@ -1947,18 +1884,10 @@ with tab4:
         else:
             st.info("没有符合条件的信号")
 
-# Tab 5: 绩效分析
-with tab5:
+# Tab 7: 绩效分析
+with tab7:
     render_section_title("绩效分析", "📉", "汇总回测表现并沉淀关键风险收益指标")
     st.info("请选择要分析的回测结果")
-
-# Tab 6: 因子分析
-with tab6:
-    render_factor_analysis_page(dm, wl_manager)
-
-# Tab 7: 财务数据管理
-with tab7:
-    render_data_management_page()
 
 # 页脚
 st.markdown("---")

@@ -5,18 +5,18 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
+import sqlite3
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any
 
 # 导入后端模块
-from portfolio.multi_factor_backtest import MultiFactorBacktest, run_multi_factor_backtest
-from portfolio.factor_ic_configurator import FactorICConfigurator
-from portfolio.factor_signal_generator import FactorSignalGenerator
 from data.data_manager import DataManager
 from data.data_provider import CacheOnlyProvider
 from strategy.fundamental_factors import FundamentalFactors
+from portfolio.watchlist import filter_out_benchmark_stocks, filter_out_benchmark_symbols
+from web.services.backtest_service import run_multi_factor_strategy_backtest
 
 
 # =============================================================================
@@ -242,12 +242,12 @@ def _render_sidebar_config(dm: DataManager, wl_manager) -> Dict[str, Any]:
 
     symbols = []
     if stock_source == "📈 自选股":
-        watchlist_stocks = wl_manager.get_all_stocks()
+        watchlist_stocks = filter_out_benchmark_stocks(wl_manager.get_all_stocks())
         if watchlist_stocks:
             symbols = [s.symbol for s in watchlist_stocks]
             st.caption(f"将使用 {len(symbols)} 只自选股")
         else:
-            st.warning("自选股为空，请先添加股票")
+            st.warning("自选股为空（默认指数已自动排除），请先添加股票")
     else:
         stock_list_input = st.text_area(
             "股票代码（逗号分隔）",
@@ -256,6 +256,7 @@ def _render_sidebar_config(dm: DataManager, wl_manager) -> Dict[str, Any]:
             key="mfbt_stock_list"
         )
         symbols = [s.strip() for s in stock_list_input.split(",") if s.strip()]
+        symbols = filter_out_benchmark_symbols(symbols)
 
     # 回测期间
     col1, col2 = st.columns(2)
@@ -268,7 +269,7 @@ def _render_sidebar_config(dm: DataManager, wl_manager) -> Dict[str, Any]:
     with col2:
         end_date = st.date_input(
             "结束日期",
-            datetime(2024, 3, 19),
+            datetime.now().date(),
             key="mfbt_end_date"
         )
 
@@ -439,17 +440,17 @@ def _execute_backtest(dm: DataManager, wl_manager, config: Dict[str, Any]):
                     stock_names[s] = s
 
             progress_callback(30, "准备因子数据")
-
-            # 构建因子数据
             factor_data = _prepare_factor_data(stock_data, list(config['factor_weights'].keys()))
 
-            progress_callback(50, "运行多因子回测")
+            if not factor_data:
+                st.error("因子数据准备失败：未生成有效因子面板")
+                return
 
-            # 运行回测
-            results = run_multi_factor_backtest(
+            # 运行回测（统一走服务层契约校验）
+            run_result = run_multi_factor_strategy_backtest(
                 symbols=symbols,
+                db_path=dm.db_path,
                 stock_data=stock_data,
-                factor_data=factor_data,
                 start_date=config['start_date'],
                 end_date=config['end_date'],
                 initial_capital=config['initial_capital'],
@@ -458,11 +459,25 @@ def _execute_backtest(dm: DataManager, wl_manager, config: Dict[str, Any]):
                 factor_weights=config['factor_weights'],
                 use_ic_weighting=config['use_ic_weighting'],
                 ic_update_freq=config['ic_update_freq'] or 60,
+                commission_rate=0.0003,
+                max_single_position=config.get('max_single_position', 0.2),
+                max_total_position=config.get('max_total_position', 0.8),
+                stop_loss=config.get('stop_loss', 0.0),
+                factor_data=factor_data,
                 progress_callback=progress_callback,
-                stock_names=stock_names
+                stock_names=stock_names,
             )
 
-            progress_callback(100, "回测完成")
+            if run_result.get("error"):
+                st.error(run_result["error"])
+                for warning_msg in run_result.get("warnings", []):
+                    st.warning(warning_msg)
+                return
+
+            results = run_result["results"]
+            for warning_msg in run_result.get("warnings", []):
+                st.warning(warning_msg)
+
             config['status_text'].text("回测完成！")
 
             # 保存结果
@@ -513,8 +528,16 @@ def _prepare_factor_data(stock_data: Dict[str, pd.DataFrame], factor_names: List
     """
     factor_data = {}
     ff = FundamentalFactors()
+    cached_rows = []
 
     try:
+        # 技术/情绪类因子可以直接从行情计算，其他因子优先走数据库缓存表（factor_values）。
+        price_driven_factors = {
+            'momentum_20', 'momentum_60', 'volatility_20',
+            'price_volume_trend', 'relative_strength', 'volume_ratio'
+        }
+        db_factor_names = [f for f in factor_names if f not in price_driven_factors and f != 'turnover_rate']
+
         for symbol, df in stock_data.items():
             factor_df = pd.DataFrame(index=df.index)
             factor_df['date'] = df['date'] if 'date' in df.columns else df.index
@@ -522,6 +545,8 @@ def _prepare_factor_data(stock_data: Dict[str, pd.DataFrame], factor_names: List
 
             # 统一日期格式，避免查询时出现 Timestamp / str 混用
             date_series = pd.to_datetime(factor_df['date']).dt.strftime('%Y-%m-%d')
+            start_date = date_series.iloc[0] if len(date_series) > 0 else None
+            end_date = date_series.iloc[-1] if len(date_series) > 0 else None
 
             # 先计算技术与情绪因子（基于价格成交量）
             if 'close' in df.columns:
@@ -538,30 +563,112 @@ def _prepare_factor_data(stock_data: Dict[str, pd.DataFrame], factor_names: List
                 vol = pd.to_numeric(df['volume'], errors='coerce')
                 factor_df['volume_ratio'] = vol / vol.rolling(20).mean()
 
-            # 再按交易日补齐基本面/估值因子
-            for idx, trade_date in enumerate(date_series):
+            # 批量加载数据库缓存的因子值（避免逐日逐股计算）
+            if db_factor_names and start_date and end_date:
+                conn = sqlite3.connect(ff.fdm.db_path)
                 try:
-                    day_factors = ff.calculate_all_factors(symbol, trade_date)
+                    placeholders = ",".join(["?" for _ in db_factor_names])
+                    query = f"""
+                        SELECT trade_date, factor_name, factor_value
+                        FROM factor_values
+                        WHERE symbol = ?
+                          AND trade_date BETWEEN ? AND ?
+                          AND factor_name IN ({placeholders})
+                        ORDER BY trade_date
+                    """
+                    params = [symbol, start_date, end_date] + db_factor_names
+                    cached_df = pd.read_sql_query(query, conn, params=params)
                 except Exception:
-                    day_factors = {}
+                    cached_df = pd.DataFrame()
+                finally:
+                    conn.close()
 
-                for factor in factor_names:
-                    if factor in day_factors:
-                        factor_df.at[factor_df.index[idx], factor] = day_factors.get(factor, np.nan)
-                    elif factor == 'eps' and 'eps_ttm' in day_factors:
-                        # 兼容历史页面里使用 eps 名称
-                        factor_df.at[factor_df.index[idx], factor] = day_factors.get('eps_ttm', np.nan)
+                if not cached_df.empty:
+                    cached_df['trade_date'] = pd.to_datetime(cached_df['trade_date']).dt.strftime('%Y-%m-%d')
+                    pivot_df = cached_df.pivot_table(
+                        index='trade_date',
+                        columns='factor_name',
+                        values='factor_value',
+                        aggfunc='last'
+                    )
+                    trade_date_map = date_series.to_dict()
 
-                # 换手率优先估值表，其次用成交量与流通股本估算
-                if 'turnover_rate' in factor_names:
-                    turnover_rate = np.nan
-                    valuation = ff.fdm.get_valuation(symbol, trade_date)
-                    if valuation:
-                        float_shares = float(valuation.get('float_shares', 0) or 0)
-                        if float_shares > 0 and 'volume' in df.columns:
-                            volume = pd.to_numeric(df.iloc[idx].get('volume', np.nan), errors='coerce')
-                            turnover_rate = (volume / float_shares) * 100 if pd.notna(volume) else np.nan
-                    factor_df.at[factor_df.index[idx], 'turnover_rate'] = turnover_rate
+                    for factor in db_factor_names:
+                        source_factor = factor
+                        if factor == 'eps' and source_factor not in pivot_df.columns and 'eps_ttm' in pivot_df.columns:
+                            source_factor = 'eps_ttm'
+                        if source_factor in pivot_df.columns:
+                            series_map = pivot_df[source_factor].to_dict()
+                            factor_df[factor] = pd.Series(trade_date_map).map(series_map).values
+
+            # 换手率：优先批量从估值表读取 float_shares，按交易日向前匹配
+            if 'turnover_rate' in factor_names and 'volume' in df.columns and start_date and end_date:
+                conn = sqlite3.connect(ff.fdm.db_path)
+                try:
+                    valuation_df = pd.read_sql_query(
+                        """
+                        SELECT trade_date, float_shares
+                        FROM valuation_data
+                        WHERE symbol = ?
+                          AND trade_date BETWEEN ? AND ?
+                        ORDER BY trade_date
+                        """,
+                        conn,
+                        params=(symbol, start_date, end_date)
+                    )
+                except Exception:
+                    valuation_df = pd.DataFrame()
+                finally:
+                    conn.close()
+
+                if not valuation_df.empty:
+                    trade_dates_df = pd.DataFrame({
+                        'trade_date': pd.to_datetime(date_series)
+                    }).sort_values('trade_date')
+                    valuation_df['trade_date'] = pd.to_datetime(valuation_df['trade_date'])
+                    valuation_df['float_shares'] = pd.to_numeric(valuation_df['float_shares'], errors='coerce')
+                    valuation_df = valuation_df.dropna(subset=['float_shares']).sort_values('trade_date')
+
+                    if not valuation_df.empty:
+                        merged_df = pd.merge_asof(
+                            trade_dates_df,
+                            valuation_df[['trade_date', 'float_shares']],
+                            on='trade_date',
+                            direction='backward'
+                        )
+                        volume_series = pd.to_numeric(df.get('volume', np.nan), errors='coerce')
+                        factor_df['turnover_rate'] = np.where(
+                            merged_df['float_shares'].fillna(0) > 0,
+                            (volume_series.values / merged_df['float_shares'].values) * 100,
+                            np.nan
+                        )
+
+            # 对数据库没有命中的因子做兜底按日计算（保持结果兼容）
+            fallback_factors = [
+                f for f in factor_names
+                if f not in factor_df.columns or factor_df[f].isna().all()
+            ]
+            if fallback_factors:
+                for idx, trade_date in enumerate(date_series):
+                    try:
+                        day_factors = ff.calculate_all_factors(symbol, trade_date)
+                    except Exception:
+                        day_factors = {}
+
+                    for factor in fallback_factors:
+                        current_val = factor_df.at[factor_df.index[idx], factor] if factor in factor_df.columns else np.nan
+                        if pd.notna(current_val):
+                            continue
+                        if factor in day_factors:
+                            value = day_factors.get(factor, np.nan)
+                            factor_df.at[factor_df.index[idx], factor] = value
+                            if pd.notna(value):
+                                cached_rows.append((symbol, trade_date, factor, float(value)))
+                        elif factor == 'eps' and 'eps_ttm' in day_factors:
+                            value = day_factors.get('eps_ttm', np.nan)
+                            factor_df.at[factor_df.index[idx], factor] = value
+                            if pd.notna(value):
+                                cached_rows.append((symbol, trade_date, factor, float(value)))
 
             # 对估值与财务因子做前向填充，保证季度/日频数据对齐到交易日
             for factor in factor_names:
@@ -571,6 +678,25 @@ def _prepare_factor_data(stock_data: Dict[str, pd.DataFrame], factor_names: List
             # 仅保留所需因子列 + 基础列
             keep_cols = ['date', 'symbol'] + [f for f in factor_names if f in factor_df.columns]
             factor_data[symbol] = factor_df[keep_cols].copy()
+
+        # 将兜底现算结果回写缓存，加速后续回测
+        if cached_rows:
+            conn = sqlite3.connect(ff.fdm.db_path)
+            try:
+                cursor = conn.cursor()
+                cursor.executemany(
+                    """
+                    INSERT OR REPLACE INTO factor_values
+                    (symbol, trade_date, factor_name, factor_value, update_time)
+                    VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    """,
+                    cached_rows
+                )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+            finally:
+                conn.close()
     finally:
         ff.close()
 

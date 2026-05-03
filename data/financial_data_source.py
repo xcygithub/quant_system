@@ -10,8 +10,11 @@ import sqlite3
 import time
 import warnings
 import traceback
+import logging
 warnings.filterwarnings('ignore')
 from config import DATABASE_PATH
+
+logger = logging.getLogger(__name__)
 
 
 class FinancialDataSource:
@@ -44,7 +47,8 @@ class FinancialDataSource:
         # Baostock 登录状态
         self._logged_in = False
         self.bs = None
-        self._init_baostock()
+        # 懒加载：仅在真正发起在线请求时才登录，避免页面重跑触发大量无效 login
+        self._baostock_import_attempted = False
 
         # API 限流控制：每分钟最多60次
         self._min_interval = 1.0  # 秒
@@ -52,20 +56,29 @@ class FinancialDataSource:
 
     def _init_baostock(self):
         """初始化 Baostock 连接"""
+        if self._logged_in:
+            return
         try:
-            import baostock as bs
-            self.bs = bs
+            if self.bs is None and not self._baostock_import_attempted:
+                import baostock as bs
+                self.bs = bs
+                self._baostock_import_attempted = True
+            elif self.bs is None:
+                # 已经尝试过导入但失败，避免重复导入开销与重复告警
+                raise ImportError("baostock import previously failed")
+
             lg = self.bs.login()
             if lg.error_code == '0':
                 self._logged_in = True
-                print(f"[OK] Baostock 登录成功")
+                logger.info("Baostock 登录成功")
             else:
-                print(f"[!] Baostock 登录失败: {lg.error_msg}")
+                logger.warning("Baostock 登录失败: error_msg=%s", lg.error_msg)
         except ImportError:
-            print("[!] Baostock 未安装，请运行: pip install baostock")
+            logger.warning("Baostock 未安装，请先执行: pip install baostock")
             self.bs = None
+            self._baostock_import_attempted = True
         except Exception as e:
-            print(f"[!] Baostock 初始化失败: {e}")
+            logger.warning("Baostock 初始化失败: error_type=%s error=%s", type(e).__name__, e)
             self.bs = None
 
     def _rate_limit(self, api_name: str):
@@ -91,6 +104,58 @@ class FinancialDataSource:
         if not self._logged_in:
             raise ConnectionError("Baostock 未登录，请检查 Baostock 安装")
 
+    def _fetch_quarterly_data(
+        self,
+        symbol: str,
+        start_year: int,
+        end_year: int,
+        api_name: str,
+        query_func,
+        data_label: str
+    ) -> pd.DataFrame:
+        """
+        按年季循环抓取 Baostock 财务数据的通用模板。
+        """
+        bs_code = self._convert_to_baostock_code(symbol)
+        if bs_code is None:
+            logger.warning("无效股票代码: symbol=%s api=%s", symbol, api_name)
+            return pd.DataFrame()
+
+        all_data = []
+        for year in range(start_year, end_year + 1):
+            for quarter in [1, 2, 3, 4]:
+                try:
+                    rs = query_func(code=bs_code, year=str(year), quarter=str(quarter))
+                    if rs.error_code != '0':
+                        logger.warning(
+                            "财务接口返回错误: symbol=%s api=%s year=%s quarter=%s error_code=%s error_msg=%s",
+                            symbol, api_name, year, quarter, rs.error_code, getattr(rs, "error_msg", "")
+                        )
+                        continue
+
+                    data_list = []
+                    while rs.next():
+                        data_list.append(rs.get_row_data())
+                    if data_list:
+                        df = pd.DataFrame(data_list, columns=rs.fields)
+                        all_data.append(df)
+                    time.sleep(0.1)
+                except Exception as e:
+                    logger.warning(
+                        "季度财务抓取失败: symbol=%s api=%s year=%s quarter=%s error_type=%s error=%s",
+                        symbol, api_name, year, quarter, type(e).__name__, e
+                    )
+                    continue
+
+        if not all_data:
+            logger.info("%s 数据为空: symbol=%s", data_label, symbol)
+            return pd.DataFrame()
+
+        result = pd.concat(all_data, ignore_index=True)
+        result['symbol'] = symbol
+        logger.info("%s 抓取完成: symbol=%s rows=%s", data_label, symbol, len(result))
+        return result
+
     # ========== 利润表数据 ==========
 
     def get_profit_data(self, symbol: str, start_year: int = None,
@@ -113,46 +178,16 @@ class FinancialDataSource:
         if end_year is None:
             end_year = datetime.now().year
         if start_year is None:
-            start_year = end_year - 3
+            start_year = end_year - 4
 
-        # 转换代码格式
-        bs_code = self._convert_to_baostock_code(symbol)
-        if bs_code is None:
-            print(f"[!] 无效的股票代码: {symbol}")
-            return pd.DataFrame()
-
-        all_data = []
-        for year in range(start_year, end_year + 1):
-            for quarter in [1, 2, 3, 4]:
-                try:
-                    rs = self.bs.query_profit_data(
-                        code=bs_code,
-                        year=str(year),
-                        quarter=str(quarter)
-                    )
-
-                    if rs.error_code == '0':
-                        data_list = []
-                        while rs.next():
-                            data_list.append(rs.get_row_data())
-                        if data_list:
-                            df = pd.DataFrame(data_list, columns=rs.fields)
-                            all_data.append(df)
-
-                    time.sleep(0.1)  # 避免请求过快
-
-                except Exception as e:
-                    print(f"  获取 {symbol} {year}Q{quarter} 利润表失败: {e}")
-                    continue
-
-        if not all_data:
-            print(f"  {symbol} 利润表数据为空")
-            return pd.DataFrame()
-
-        result = pd.concat(all_data, ignore_index=True)
-        result['symbol'] = symbol
-        print(f"  [OK] {symbol} 获取利润表 {len(result)} 条记录")
-        return result
+        return self._fetch_quarterly_data(
+            symbol=symbol,
+            start_year=start_year,
+            end_year=end_year,
+            api_name='query_profit_data',
+            query_func=self.bs.query_profit_data,
+            data_label='利润表'
+        )
 
     # ========== 资产负债表 ==========
 
@@ -170,44 +205,16 @@ class FinancialDataSource:
         if end_year is None:
             end_year = datetime.now().year
         if start_year is None:
-            start_year = end_year - 3
+            start_year = end_year - 4
 
-        bs_code = self._convert_to_baostock_code(symbol)
-        if bs_code is None:
-            return pd.DataFrame()
-
-        all_data = []
-        for year in range(start_year, end_year + 1):
-            for quarter in [1, 2, 3, 4]:
-                try:
-                    rs = self.bs.query_balance_data(
-                        code=bs_code,
-                        year=str(year),
-                        quarter=str(quarter)
-                    )
-
-                    if rs.error_code == '0':
-                        data_list = []
-                        while rs.next():
-                            data_list.append(rs.get_row_data())
-                        if data_list:
-                            df = pd.DataFrame(data_list, columns=rs.fields)
-                            all_data.append(df)
-
-                    time.sleep(0.1)
-
-                except Exception as e:
-                    print(f"  获取 {symbol} {year}Q{quarter} 资产负债表失败: {e}")
-                    continue
-
-        if not all_data:
-            print(f"  {symbol} 资产负债表数据为空")
-            return pd.DataFrame()
-
-        result = pd.concat(all_data, ignore_index=True)
-        result['symbol'] = symbol
-        print(f"  [OK] {symbol} 获取资产负债表 {len(result)} 条记录")
-        return result
+        return self._fetch_quarterly_data(
+            symbol=symbol,
+            start_year=start_year,
+            end_year=end_year,
+            api_name='query_balance_data',
+            query_func=self.bs.query_balance_data,
+            data_label='资产负债表'
+        )
 
     # ========== 现金流量表 ==========
 
@@ -225,44 +232,16 @@ class FinancialDataSource:
         if end_year is None:
             end_year = datetime.now().year
         if start_year is None:
-            start_year = end_year - 3
+            start_year = end_year - 4
 
-        bs_code = self._convert_to_baostock_code(symbol)
-        if bs_code is None:
-            return pd.DataFrame()
-
-        all_data = []
-        for year in range(start_year, end_year + 1):
-            for quarter in [1, 2, 3, 4]:
-                try:
-                    rs = self.bs.query_cash_flow_data(
-                        code=bs_code,
-                        year=str(year),
-                        quarter=str(quarter)
-                    )
-
-                    if rs.error_code == '0':
-                        data_list = []
-                        while rs.next():
-                            data_list.append(rs.get_row_data())
-                        if data_list:
-                            df = pd.DataFrame(data_list, columns=rs.fields)
-                            all_data.append(df)
-
-                    time.sleep(0.1)
-
-                except Exception as e:
-                    print(f"  获取 {symbol} {year}Q{quarter} 现金流量表失败: {e}")
-                    continue
-
-        if not all_data:
-            print(f"  {symbol} 现金流量表数据为空")
-            return pd.DataFrame()
-
-        result = pd.concat(all_data, ignore_index=True)
-        result['symbol'] = symbol
-        print(f"  [OK] {symbol} 获取现金流量表 {len(result)} 条记录")
-        return result
+        return self._fetch_quarterly_data(
+            symbol=symbol,
+            start_year=start_year,
+            end_year=end_year,
+            api_name='query_cash_flow_data',
+            query_func=self.bs.query_cash_flow_data,
+            data_label='现金流量表'
+        )
 
     # ========== 杜邦分析 ==========
 
@@ -280,44 +259,16 @@ class FinancialDataSource:
         if end_year is None:
             end_year = datetime.now().year
         if start_year is None:
-            start_year = end_year - 3
+            start_year = end_year - 4
 
-        bs_code = self._convert_to_baostock_code(symbol)
-        if bs_code is None:
-            return pd.DataFrame()
-
-        all_data = []
-        for year in range(start_year, end_year + 1):
-            for quarter in [1, 2, 3, 4]:
-                try:
-                    rs = self.bs.query_dupont_data(
-                        code=bs_code,
-                        year=str(year),
-                        quarter=str(quarter)
-                    )
-
-                    if rs.error_code == '0':
-                        data_list = []
-                        while rs.next():
-                            data_list.append(rs.get_row_data())
-                        if data_list:
-                            df = pd.DataFrame(data_list, columns=rs.fields)
-                            all_data.append(df)
-
-                    time.sleep(0.1)
-
-                except Exception as e:
-                    print(f"  获取 {symbol} {year}Q{quarter} 杜邦分析失败: {e}")
-                    continue
-
-        if not all_data:
-            print(f"  {symbol} 杜邦分析数据为空")
-            return pd.DataFrame()
-
-        result = pd.concat(all_data, ignore_index=True)
-        result['symbol'] = symbol
-        print(f"  [OK] {symbol} 获取杜邦分析 {len(result)} 条记录")
-        return result
+        return self._fetch_quarterly_data(
+            symbol=symbol,
+            start_year=start_year,
+            end_year=end_year,
+            api_name='query_dupont_data',
+            query_func=self.bs.query_dupont_data,
+            data_label='杜邦分析'
+        )
 
     # ========== 成长能力 ==========
 
@@ -334,44 +285,16 @@ class FinancialDataSource:
         if end_year is None:
             end_year = datetime.now().year
         if start_year is None:
-            start_year = end_year - 3
+            start_year = end_year - 4
 
-        bs_code = self._convert_to_baostock_code(symbol)
-        if bs_code is None:
-            return pd.DataFrame()
-
-        all_data = []
-        for year in range(start_year, end_year + 1):
-            for quarter in [1, 2, 3, 4]:
-                try:
-                    rs = self.bs.query_growth_data(
-                        code=bs_code,
-                        year=str(year),
-                        quarter=str(quarter)
-                    )
-
-                    if rs.error_code == '0':
-                        data_list = []
-                        while rs.next():
-                            data_list.append(rs.get_row_data())
-                        if data_list:
-                            df = pd.DataFrame(data_list, columns=rs.fields)
-                            all_data.append(df)
-
-                    time.sleep(0.1)
-
-                except Exception as e:
-                    print(f"  获取 {symbol} {year}Q{quarter} 成长能力失败: {e}")
-                    continue
-
-        if not all_data:
-            print(f"  {symbol} 成长能力数据为空")
-            return pd.DataFrame()
-
-        result = pd.concat(all_data, ignore_index=True)
-        result['symbol'] = symbol
-        print(f"  [OK] {symbol} 获取成长能力 {len(result)} 条记录")
-        return result
+        return self._fetch_quarterly_data(
+            symbol=symbol,
+            start_year=start_year,
+            end_year=end_year,
+            api_name='query_growth_data',
+            query_func=self.bs.query_growth_data,
+            data_label='成长能力'
+        )
 
     # ========== 营运能力 ==========
 
@@ -388,44 +311,16 @@ class FinancialDataSource:
         if end_year is None:
             end_year = datetime.now().year
         if start_year is None:
-            start_year = end_year - 3
+            start_year = end_year - 4
 
-        bs_code = self._convert_to_baostock_code(symbol)
-        if bs_code is None:
-            return pd.DataFrame()
-
-        all_data = []
-        for year in range(start_year, end_year + 1):
-            for quarter in [1, 2, 3, 4]:
-                try:
-                    rs = self.bs.query_operation_data(
-                        code=bs_code,
-                        year=str(year),
-                        quarter=str(quarter)
-                    )
-
-                    if rs.error_code == '0':
-                        data_list = []
-                        while rs.next():
-                            data_list.append(rs.get_row_data())
-                        if data_list:
-                            df = pd.DataFrame(data_list, columns=rs.fields)
-                            all_data.append(df)
-
-                    time.sleep(0.1)
-
-                except Exception as e:
-                    print(f"  获取 {symbol} {year}Q{quarter} 营运能力失败: {e}")
-                    continue
-
-        if not all_data:
-            print(f"  {symbol} 营运能力数据为空")
-            return pd.DataFrame()
-
-        result = pd.concat(all_data, ignore_index=True)
-        result['symbol'] = symbol
-        print(f"  [OK] {symbol} 获取营运能力 {len(result)} 条记录")
-        return result
+        return self._fetch_quarterly_data(
+            symbol=symbol,
+            start_year=start_year,
+            end_year=end_year,
+            api_name='query_operation_data',
+            query_func=self.bs.query_operation_data,
+            data_label='营运能力'
+        )
 
     # ========== 偿债能力 ==========
 
@@ -443,7 +338,7 @@ class FinancialDataSource:
         if end_year is None:
             end_year = datetime.now().year
         if start_year is None:
-            start_year = end_year - 3
+            start_year = end_year - 4
 
         bs_code = self._convert_to_baostock_code(symbol)
         if bs_code is None:
@@ -468,20 +363,29 @@ class FinancialDataSource:
                             if data_list:
                                 df = pd.DataFrame(data_list, columns=rs.fields)
                                 all_data.append(df)
+                        else:
+                            logger.warning(
+                                "偿债能力接口返回错误: symbol=%s year=%s quarter=%s error_code=%s error_msg=%s",
+                                symbol, year, quarter, rs.error_code, getattr(rs, "error_msg", "")
+                            )
                         time.sleep(0.1)
-                    except Exception:
+                    except Exception as e:
+                        logger.warning(
+                            "偿债能力接口抓取失败: symbol=%s year=%s quarter=%s error_type=%s error=%s",
+                            symbol, year, quarter, type(e).__name__, e
+                        )
                         continue
 
             if all_data:
                 result = pd.concat(all_data, ignore_index=True)
                 result['symbol'] = symbol
-                print(f"  [OK] {symbol} 获取偿债能力 {len(result)} 条记录（独立接口）")
+                logger.info("偿债能力抓取完成(独立接口): symbol=%s rows=%s", symbol, len(result))
                 return result
 
         # 2) 回退：从资产负债表字段抽取偿债能力
         balance_df = self.get_balance_data(symbol, start_year=start_year, end_year=end_year)
         if balance_df.empty:
-            print(f"  {symbol} 偿债能力数据为空（独立接口与资产负债表均无数据）")
+            logger.info("偿债能力数据为空: symbol=%s source=independent_and_balance_fallback", symbol)
             return pd.DataFrame()
 
         fallback_cols = ['statDate', 'date', 'code', 'currentRatio', 'quickRatio', 'cashRatio']
@@ -491,7 +395,7 @@ class FinancialDataSource:
 
         result = balance_df[fallback_cols].copy()
         result['symbol'] = symbol
-        print(f"  [OK] {symbol} 获取偿债能力 {len(result)} 条记录（资产负债表回退）")
+        logger.info("偿债能力抓取完成(资产负债表回退): symbol=%s rows=%s", symbol, len(result))
         return result
 
     # ========== 全量财务数据 ==========
@@ -558,10 +462,10 @@ class FinancialDataSource:
             if file_path.exists():
                 with open(file_path, 'r', encoding='utf-8') as f:
                     symbols = json.load(f)
-                print(f"  [OK] 从文件加载 {len(symbols)} 只股票")
+                logger.info("从本地文件加载股票列表: rows=%s", len(symbols))
                 return symbols
         except Exception as e:
-            print(f"  加载股票列表文件失败: {e}")
+            logger.warning("加载股票列表文件失败: path=%s error_type=%s error=%s", file_path, type(e).__name__, e)
 
         # 如果文件不存在或加载失败，尝试用 Baostock 获取
         self._ensure_login()
@@ -576,11 +480,11 @@ class FinancialDataSource:
             sz50 = self._query_index_stocks('sz50')
 
             symbols = list(set(hs300 + zz500 + sz50))
-            print(f"  [OK] 获取全市场 {len(symbols)} 只股票（沪深300+中证500+上证50）")
+            logger.info("获取指数成分股票列表完成: rows=%s", len(symbols))
             return symbols
 
         except Exception as e:
-            print(f"获取股票列表失败: {e}")
+            logger.warning("获取股票列表失败: error_type=%s error=%s", type(e).__name__, e)
             return []
 
     def _query_index_stocks(self, index: str) -> List[str]:
@@ -637,7 +541,7 @@ class FinancialDataSource:
         # 获取全市场股票列表
         symbols = self.get_all_stocks()
         if not symbols:
-            print("股票列表为空")
+            logger.warning("获取全市场估值终止: 股票列表为空")
             return pd.DataFrame()
 
         all_data = []
@@ -690,19 +594,23 @@ class FinancialDataSource:
                         all_data.append(df)
 
                 if (i + 1) % 100 == 0:
-                    print(f"  进度: {i+1}/{len(symbols)}")
+                    logger.info("全市场估值抓取进度: current=%s total=%s", i + 1, len(symbols))
 
                 time.sleep(0.1)  # 避免请求过快
 
             except Exception as e:
+                logger.warning(
+                    "抓取单股估值失败: symbol=%s error_type=%s error=%s",
+                    symbol, type(e).__name__, e
+                )
                 continue
 
         if not all_data:
-            print("未获取到任何估值数据")
+            logger.warning("全市场估值抓取结果为空")
             return pd.DataFrame()
 
         result = pd.concat(all_data, ignore_index=True)
-        print(f"  [OK] 获取全市场 {len(result)} 只股票估值数据")
+        logger.info("全市场估值抓取完成: rows=%s", len(result))
         return result
 
     # ========== 单只股票历史估值数据 ==========
@@ -773,6 +681,10 @@ class FinancialDataSource:
             return df
 
         except Exception as e:
+            logger.warning(
+                "获取历史估值失败: symbol=%s start_date=%s end_date=%s error_type=%s error=%s",
+                symbol, start_date, end_date, type(e).__name__, e
+            )
             return pd.DataFrame()
 
     # ========== 股票基本信息 ==========
@@ -793,7 +705,7 @@ class FinancialDataSource:
             rs = self.bs.query_stocks()
 
             if rs.error_code != '0':
-                print(f"获取股票信息失败: {rs.error_msg}")
+                logger.warning("获取股票信息失败: error_msg=%s", rs.error_msg)
                 return pd.DataFrame()
 
             data_list = []
@@ -824,7 +736,7 @@ class FinancialDataSource:
             return df
 
         except Exception as e:
-            print(f"获取股票信息失败: {e}")
+            logger.warning("获取股票信息异常: error_type=%s error=%s", type(e).__name__, e)
             return pd.DataFrame()
 
     # ========== 辅助方法 ==========
@@ -882,9 +794,9 @@ class FinancialDataSource:
             try:
                 self.bs.logout()
                 self._logged_in = False
-                print("[OK] Baostock 已登出")
-            except:
-                pass
+                logger.info("Baostock 已登出")
+            except Exception as e:
+                logger.debug("Baostock 登出异常: error_type=%s error=%s", type(e).__name__, e)
 
     def __del__(self):
         """析构时确保登出"""
@@ -921,7 +833,7 @@ def get_financial_data_simple(symbol: str, data_type: str = 'profit') -> pd.Data
     elif data_type == 'debtpaying':
         return source.get_debtpaying_data(symbol)
     else:
-        print(f"未知数据类型: {data_type}")
+        logger.warning("未知数据类型: data_type=%s", data_type)
         return pd.DataFrame()
 
 
