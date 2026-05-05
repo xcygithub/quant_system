@@ -193,6 +193,7 @@ class MultiStockBacktest:
         # 回测数据
         self.stock_data: Dict[str, pd.DataFrame] = {}
         self.signals: Dict[str, pd.Series] = {}
+        self.stock_names: Dict[str, str] = {}
 
         # 选股器和仓位分配器
         self.selector = create_selector(method=selector_method, top_n=max_positions)
@@ -592,6 +593,9 @@ class MultiStockBacktest:
             reason: 买入原因
             stock_name: 股票中文名称
         """
+        if not stock_name:
+            stock_name = self.stock_names.get(symbol, "")
+
         if quantity <= 0 or price <= 0:
             return
 

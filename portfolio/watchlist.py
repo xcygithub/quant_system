@@ -4,6 +4,7 @@
 """
 import json
 import os
+import re
 from pathlib import Path
 from typing import List, Dict, Optional, Set
 from dataclasses import dataclass, field, asdict
@@ -19,9 +20,52 @@ DEFAULT_BENCHMARK_INDICES: Dict[str, str] = {
 }
 
 
+def _parse_symbol_input(raw_symbol: str) -> tuple[str, str]:
+    """解析股票输入，返回 (symbol_text, inferred_name)。"""
+    raw_symbol = (raw_symbol or "").strip()
+    if not raw_symbol:
+        return "", ""
+
+    # 支持：紫金矿业(SH:601899) / 紫金矿业（SH:601899）
+    match = re.match(
+        r"^(?P<name>.+?)\s*[（(]\s*(?P<ex>SH|SZ|BJ)\s*[:：]\s*(?P<code>\d{6})\s*[)）]\s*$",
+        raw_symbol,
+        flags=re.IGNORECASE,
+    )
+    if match:
+        name = match.group("name").strip()
+        ex = match.group("ex").upper()
+        code = match.group("code").strip()
+        return f"{code}.{ex}", name
+
+    # 支持：SH:601899 / SZ:000001（含中文冒号）
+    ex_match = re.match(r"^(?P<ex>SH|SZ|BJ)\s*[:：]\s*(?P<code>\d{6})$", raw_symbol, flags=re.IGNORECASE)
+    if ex_match:
+        ex = ex_match.group("ex").upper()
+        code = ex_match.group("code").strip()
+        return f"{code}.{ex}", ""
+
+    # 兼容脏数据：紫金矿业(SH:601899).SZ / 紫金矿业 SH:601899
+    embedded_match = re.search(
+        r"(?P<ex>SH|SZ|BJ)\s*[:：]\s*(?P<code>\d{6})",
+        raw_symbol,
+        flags=re.IGNORECASE,
+    )
+    if embedded_match:
+        ex = embedded_match.group("ex").upper()
+        code = embedded_match.group("code").strip()
+        # 提取括号前的名称（如果存在）
+        name_match = re.match(r"^(?P<name>.+?)\s*[（(]", raw_symbol)
+        inferred_name = name_match.group("name").strip() if name_match else ""
+        return f"{code}.{ex}", inferred_name
+
+    return raw_symbol, ""
+
+
 def _normalize_symbol_text(symbol: str) -> str:
     """标准化股票/指数代码格式。"""
-    symbol = (symbol or "").strip().upper()
+    symbol, _ = _parse_symbol_input(symbol)
+    symbol = symbol.strip().upper()
     if not symbol:
         return symbol
 
@@ -162,12 +206,31 @@ class WatchlistManager:
 
                 # 加载自选股
                 stocks = data.get('stocks', [])
+                has_symbol_fix = False
                 for stock_data in stocks:
                     stock = StockInfo(**stock_data)
-                    self._watchlist[stock.symbol] = stock
+                    normalized_symbol = self._normalize_symbol(stock.symbol)
+                    if normalized_symbol != stock.symbol:
+                        has_symbol_fix = True
+                        stock.symbol = normalized_symbol
+                    existing = self._watchlist.get(normalized_symbol)
+                    if existing is None:
+                        self._watchlist[normalized_symbol] = stock
+                    else:
+                        # 冲突时保留名称更完整的一份，避免清洗后覆盖有用信息
+                        if (not existing.name or existing.name == existing.symbol) and stock.name:
+                            existing.name = stock.name
+                        if stock.group:
+                            existing.group = stock.group
+                        if stock.notes:
+                            existing.notes = stock.notes
+                        if stock.tags:
+                            existing.tags = stock.tags
 
                 # 加载分组
                 self._groups = set(data.get('groups', ["默认"]))
+                if has_symbol_fix:
+                    self._save()
 
             except Exception as e:
                 print(f"加载自选股失败: {e}")
@@ -205,8 +268,11 @@ class WatchlistManager:
         Returns:
             是否添加成功
         """
+        original_symbol = symbol
         # 标准化代码格式
         symbol = self._normalize_symbol(symbol)
+        _, inferred_name = _parse_symbol_input(original_symbol)
+        name = (name or "").strip() or inferred_name
 
         if symbol in self._watchlist:
             # 已存在，更新信息

@@ -167,6 +167,9 @@ class MultiFactorBacktest(MultiStockBacktest):
 
         # 股票名称映射 {symbol: name}
         self.stock_names: Dict[str, str] = {}
+        # 首笔买入诊断：用于解释“回测开始后为何长期空仓”
+        self.first_buy_date: Optional[str] = None
+        self.pre_first_buy_diagnostics: List[Dict[str, Any]] = []
 
     def set_data(
         self,
@@ -259,6 +262,8 @@ class MultiFactorBacktest(MultiStockBacktest):
 
         # 重置调仓快照（每次回测重新记录）
         self.rebalance_snapshots = []
+        self.first_buy_date = None
+        self.pre_first_buy_diagnostics = []
         # 注意：不重置 _factor_panel_cache 等缓存，
         # 因为 set_data() 中已生成，而 run() 中不会重新调用 set_data()
 
@@ -288,6 +293,8 @@ class MultiFactorBacktest(MultiStockBacktest):
         # ===== 新增：将调仓快照加入结果 =====
         results['rebalance_snapshots'] = self.rebalance_snapshots
         results['factor_names'] = self.factor_names
+        results['first_buy_date'] = self.first_buy_date
+        results['pre_first_buy_diagnostics'] = self.pre_first_buy_diagnostics
 
         # 打印因子报告摘要
         self._print_factor_summary(factor_report)
@@ -472,6 +479,7 @@ class MultiFactorBacktest(MultiStockBacktest):
     def _rebalance(self, date, prices: Dict[str, float]):
         """调仓：重写父类方法，增加因子信息记录和调仓快照"""
         self._maybe_update_ic_weights_for_rebalance()
+        date_str = str(date)[:10]
 
         # 0. 排除当天止损卖出的股票
         stop_loss_sold = self._stop_loss_sold_today.copy()
@@ -480,12 +488,26 @@ class MultiFactorBacktest(MultiStockBacktest):
         new_candidates = self._select_candidates()
 
         if not new_candidates:
+            self._record_pre_first_buy_debug({
+                "date": date_str,
+                "reason": "no_candidates",
+                "candidate_count": 0,
+                "cash": round(float(self.cash), 2),
+                "positions_count": len(self.positions),
+            })
             return
 
         # 过滤掉当天止损卖出的股票
         new_candidates = [c for c in new_candidates if c.symbol not in stop_loss_sold]
 
         if not new_candidates:
+            self._record_pre_first_buy_debug({
+                "date": date_str,
+                "reason": "all_candidates_filtered_by_stop_loss_today",
+                "candidate_count": 0,
+                "cash": round(float(self.cash), 2),
+                "positions_count": len(self.positions),
+            })
             return
 
         # 2. 计算目标持仓
@@ -501,7 +523,6 @@ class MultiFactorBacktest(MultiStockBacktest):
         snapshot = RebalanceSnapshot(date=str(date)[:10])
 
         # 记录全部候选股票的因子信息
-        date_str = str(date)[:10]
         if date_str in self._composite_scores_cache:
             snapshot.all_scores = self._composite_scores_cache[date_str]
         if date_str in self._factor_panel_cache:
@@ -518,6 +539,21 @@ class MultiFactorBacktest(MultiStockBacktest):
         snapshot.sold_symbols = list(to_sell)
 
         # 4. 分配仓位并买入
+        debug_stats = {
+            "date": date_str,
+            "reason": "rebalance_no_buy",
+            "candidate_count": len(new_candidates),
+            "allocation_count": 0,
+            "price_available_count": 0,
+            "executed_buy_count": 0,
+            "skip_non_positive_weight": 0,
+            "skip_missing_price": 0,
+            "skip_target_already_reached": 0,
+            "skip_lot_too_small": 0,
+            "cash": round(float(self.cash), 2),
+            "positions_count": len(self.positions),
+        }
+
         if self.cash > 0:
             # 准备候选股票数据（包含得分和波动率）
             candidate_data = []
@@ -532,73 +568,97 @@ class MultiFactorBacktest(MultiStockBacktest):
                 total_assets,
                 prices
             )
+            debug_stats["allocation_count"] = len(allocations)
 
             # 执行买入（扣除已有持仓，只买差额部分）
             for alloc in allocations:
-                if alloc.symbol in prices and alloc.weight > 0:
-                    # 计算目标持仓金额
-                    target_amount = total_assets * alloc.weight
-                    # 扣除已有持仓市值
-                    current_holding = self.positions[alloc.symbol].market_value if alloc.symbol in self.positions else 0
-                    buy_amount_needed = target_amount - current_holding
+                if alloc.weight <= 0:
+                    debug_stats["skip_non_positive_weight"] += 1
+                    continue
+                if alloc.symbol not in prices:
+                    debug_stats["skip_missing_price"] += 1
+                    continue
 
-                    if buy_amount_needed <= 0:
-                        # 已达目标仓位，不需要加仓
-                        continue
+                debug_stats["price_available_count"] += 1
 
-                    # 根据需要买入的金额计算股数
-                    price = prices[alloc.symbol]
-                    buy_shares = int(buy_amount_needed / price / 100) * 100
-                    if buy_shares < 100:
-                        continue
+                # 计算目标持仓金额
+                target_amount = total_assets * alloc.weight
+                # 扣除已有持仓市值
+                current_holding = self.positions[alloc.symbol].market_value if alloc.symbol in self.positions else 0
+                buy_amount_needed = target_amount - current_holding
 
-                    # 获取该股票的因子信息
-                    factor_values = {}
-                    factor_percentiles = {}
-                    composite_score = 0.0
-                    rank = 0
+                if buy_amount_needed <= 0:
+                    # 已达目标仓位，不需要加仓
+                    debug_stats["skip_target_already_reached"] += 1
+                    continue
 
-                    if date_str in self._factor_panel_cache:
-                        panel = self._factor_panel_cache[date_str]
-                        if alloc.symbol in panel.index:
-                            factor_values = {
-                                f: panel.loc[alloc.symbol, f]
-                                for f in self.factor_names if f in panel.columns
-                            }
+                # 根据需要买入的金额计算股数
+                price = prices[alloc.symbol]
+                buy_shares = int(buy_amount_needed / price / 100) * 100
+                if buy_shares < 100:
+                    debug_stats["skip_lot_too_small"] += 1
+                    continue
 
-                    if date_str in self._factor_percentiles_cache:
-                        percs = self._factor_percentiles_cache[date_str]
-                        factor_percentiles = percs.get(alloc.symbol, {})
+                # 获取该股票的因子信息
+                factor_values = {}
+                factor_percentiles = {}
+                composite_score = 0.0
+                rank = 0
 
-                    if date_str in self._composite_scores_cache:
-                        scores = self._composite_scores_cache[date_str]
-                        composite_score = scores.get(alloc.symbol, 0)
-                        # 计算排名
-                        sorted_scores = sorted(scores.items(), key=lambda x: x[1], reverse=True)
-                        for i, (sym, _) in enumerate(sorted_scores):
-                            if sym == alloc.symbol:
-                                rank = i + 1
-                                break
+                if date_str in self._factor_panel_cache:
+                    panel = self._factor_panel_cache[date_str]
+                    if alloc.symbol in panel.index:
+                        factor_values = {
+                            f: panel.loc[alloc.symbol, f]
+                            for f in self.factor_names if f in panel.columns
+                        }
 
-                    # 获取股票名称
-                    stock_name = self.stock_names.get(alloc.symbol, "")
+                if date_str in self._factor_percentiles_cache:
+                    percs = self._factor_percentiles_cache[date_str]
+                    factor_percentiles = percs.get(alloc.symbol, {})
 
-                    # 执行买入（传入因子信息）
-                    self._buy_multi_factor(
-                        alloc.symbol, date, price, buy_shares, total_assets, "调仓买入",
-                        stock_name=stock_name,
-                        factor_values=factor_values,
-                        factor_percentiles=factor_percentiles,
-                        composite_score=composite_score,
-                        rank=rank,
-                        total_candidates=len(snapshot.all_scores)
-                    )
+                if date_str in self._composite_scores_cache:
+                    scores = self._composite_scores_cache[date_str]
+                    composite_score = scores.get(alloc.symbol, 0)
+                    # 计算排名
+                    sorted_scores = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+                    for i, (sym, _) in enumerate(sorted_scores):
+                        if sym == alloc.symbol:
+                            rank = i + 1
+                            break
 
-                    snapshot.selected_symbols.append(alloc.symbol)
+                # 获取股票名称
+                stock_name = self.stock_names.get(alloc.symbol, "")
+
+                # 执行买入（传入因子信息）
+                self._buy_multi_factor(
+                    alloc.symbol, date, price, buy_shares, total_assets, "调仓买入",
+                    stock_name=stock_name,
+                    factor_values=factor_values,
+                    factor_percentiles=factor_percentiles,
+                    composite_score=composite_score,
+                    rank=rank,
+                    total_candidates=len(snapshot.all_scores)
+                )
+
+                snapshot.selected_symbols.append(alloc.symbol)
+                debug_stats["executed_buy_count"] += 1
+
+        if self.first_buy_date is None and debug_stats["executed_buy_count"] > 0:
+            self.first_buy_date = date_str
+        self._record_pre_first_buy_debug(debug_stats)
 
         # 保存调仓快照
         self.rebalance_snapshots.append(snapshot)
         self.last_rebalance_day = self.trading_days
+
+    def _record_pre_first_buy_debug(self, debug_row: Dict[str, Any]) -> None:
+        """记录首笔买入前的调仓诊断信息。"""
+        if self.first_buy_date is not None:
+            return
+        if len(self.pre_first_buy_diagnostics) >= 200:
+            return
+        self.pre_first_buy_diagnostics.append(debug_row)
 
     def _buy_multi_factor(
         self,

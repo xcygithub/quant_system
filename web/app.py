@@ -1203,7 +1203,11 @@ with tab1:
         st.subheader("📋 自选股列表")
 
         with st.expander("➕ 添加自选股", expanded=False):
-            new_symbol = st.text_input("股票代码", value="", placeholder="如: 000001.SH（上证指数）或 000001.SZ（平安银行）")
+            new_symbol = st.text_input(
+                "股票代码",
+                value="",
+                placeholder="如: 000001.SH / SH:601899 / 紫金矿业(SH:601899)",
+            )
             new_name = st.text_input("股票名称", value="", placeholder="如: 平安银行")
             new_group = st.selectbox("分组", ["默认", "持仓股", "银行", "消费", "科技", "医药", "新能源", "自定义"])
             if new_group == "自定义":
@@ -1211,7 +1215,8 @@ with tab1:
             if st.button("添加", key="add_stock"):
                 if new_symbol:
                     symbol = new_symbol.strip()
-                    name = new_name.strip() if new_name.strip() else symbol
+                    # 名称留空时交给 WatchlistManager 从输入中智能推断
+                    name = new_name.strip() if new_name.strip() else ""
                     success = wl_manager.add_stock(symbol, name, new_group)
                     if success:
                         st.success(f"✅ 已添加 {symbol}")
@@ -1371,24 +1376,43 @@ with tab1:
                 selected_idx = selected_rows[0]
                 if 0 <= selected_idx < len(page_rows):
                     st.session_state['selected_stock'] = page_rows[selected_idx]['symbol']
+                    st.session_state['delete_target_symbol'] = page_rows[selected_idx]['symbol']
                     st.session_state.watchlist_view_mode = 'detail'
                     st.rerun()
 
             all_symbols = [r['symbol'] for r in stock_rows]
-            current_view_symbol = st.session_state.get('selected_stock', all_symbols[0] if all_symbols else None)
-            if current_view_symbol not in all_symbols and all_symbols:
-                current_view_symbol = all_symbols[0]
+            delete_target = st.session_state.get("delete_target_symbol")
+            if delete_target not in all_symbols and all_symbols:
+                selected_stock = st.session_state.get("selected_stock")
+                delete_target = selected_stock if selected_stock in all_symbols else all_symbols[0]
+                st.session_state["delete_target_symbol"] = delete_target
 
             action_col1, action_col2 = st.columns(2)
             with action_col1:
-                if current_view_symbol and st.button("删除当前股票", use_container_width=True):
-                    success = wl_manager.remove_stock(current_view_symbol)
-                    if success:
-                        st.success(f"已删除 {current_view_symbol}")
-                        st.session_state.pop('selected_stock', None)
-                        st.rerun()
-                    else:
-                        st.error("删除失败")
+                if all_symbols:
+                    delete_target = st.selectbox(
+                        "删除目标股票",
+                        options=all_symbols,
+                        index=all_symbols.index(st.session_state["delete_target_symbol"]),
+                        key="delete_target_selector",
+                    )
+                    st.session_state["delete_target_symbol"] = delete_target
+
+                    confirm_delete = st.checkbox(
+                        f"确认删除 {delete_target}",
+                        key=f"confirm_delete_{delete_target}",
+                    )
+                    if st.button(f"删除 {delete_target}", use_container_width=True, disabled=not confirm_delete):
+                        success = wl_manager.remove_stock(delete_target)
+                        if success:
+                            st.success(f"已删除 {delete_target}")
+                            st.session_state.pop('selected_stock', None)
+                            st.session_state.pop('delete_target_symbol', None)
+                            st.rerun()
+                        else:
+                            st.error("删除失败")
+                else:
+                    st.info("暂无可删除股票")
             with action_col2:
                 if st.button("导出本组", use_container_width=True):
                     st.session_state['multi_stock_symbols'] = all_symbols
@@ -1604,6 +1628,12 @@ with tab2:
 
                         # ==================== 普通策略回测模式 ====================
                         else:
+                            stock_names = {}
+                            for symbol in run_config["symbols"]:
+                                stock_info = wl_manager.get_stock(symbol)
+                                if stock_info and stock_info.name:
+                                    stock_names[symbol] = stock_info.name
+
                             run_result = run_standard_strategy_backtest(
                                 stock_data=stock_data,
                                 strategy_name=run_config["strategy_name"],
@@ -1618,6 +1648,7 @@ with tab2:
                                 max_single_position=run_config["max_single_position"],
                                 max_total_position=run_config["max_total_position"],
                                 stop_loss=run_config["stop_loss"],
+                                stock_names=stock_names,
                             )
 
                             for warning_msg in run_result.get("warnings", []):

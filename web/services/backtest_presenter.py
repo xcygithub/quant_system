@@ -8,6 +8,15 @@ import plotly.graph_objects as go
 import streamlit as st
 
 
+def _style_trade_details_dataframe(trade_details_df: pd.DataFrame) -> Any:
+    """交易明细仅格式化浮点列为两位小数，整型列保持原样。"""
+    display_df = trade_details_df.drop(columns=["股票代码", "股票名称"], errors="ignore")
+    float_cols = display_df.select_dtypes(include=["float", "floating"]).columns.tolist()
+    if not float_cols:
+        return display_df
+    return display_df.style.format("{:.2f}", subset=float_cols)
+
+
 def render_multi_factor_results(results: Dict[str, Any], stock_count: int) -> None:
     """展示多因子回测结果。"""
     st.success(f"✅ 多因子回测完成! 共回测 {stock_count} 只股票")
@@ -189,7 +198,12 @@ def render_standard_results(
         else:
             st.metric("胜率", "—")
 
-    st.dataframe(trade_details_df, use_container_width=True, hide_index=True)
+    display_df = trade_details_df.drop(columns=["交易ID"], errors="ignore")
+    st.dataframe(
+        _style_trade_details_dataframe(display_df),
+        use_container_width=True,
+        hide_index=True,
+    )
     if not open_trades:
         return
 

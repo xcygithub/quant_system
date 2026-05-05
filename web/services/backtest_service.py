@@ -201,6 +201,7 @@ def run_standard_strategy_backtest(
     max_single_position: float,
     max_total_position: float,
     stop_loss: float,
+    stock_names: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
     """执行普通策略回测。"""
     signals, warnings = _generate_signals(stock_data, strategy_name, strategy_params)
@@ -217,6 +218,8 @@ def run_standard_strategy_backtest(
         max_total_position=max_total_position,
         stop_loss=-abs(stop_loss),
     )
+    if stock_names:
+        engine.stock_names = stock_names
     engine.set_data(stock_data, signals)
     results = engine.run(start_date, end_date)
 
@@ -317,7 +320,8 @@ def run_multi_factor_strategy_backtest(
             commission_rate=commission_rate,
             max_single_position=max_single_position,
             max_total_position=max_total_position,
-            stop_loss=stop_loss,
+            # MultiStockBacktest 约定止损阈值为负数（如 -0.1 表示亏损 10%）
+            stop_loss=-abs(stop_loss),
             stock_names=stock_names,
         )
         if quality_report:
