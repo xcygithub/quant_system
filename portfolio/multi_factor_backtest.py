@@ -14,6 +14,7 @@ from .multi_stock_backtest import (
     MultiStockBacktest, PortfolioPosition, TradeRecord, TradeDetail,
     run_multi_stock_backtest
 )
+from .selector import StockScore
 from .factor_signal_generator import FactorSignalGenerator, create_signal_generator
 from .factor_exposure_tracker import FactorExposureTracker
 from .factor_ic_configurator import FactorICConfigurator
@@ -476,10 +477,39 @@ class MultiFactorBacktest(MultiStockBacktest):
 
         return panel
 
+    def _select_candidates(self) -> List[StockScore]:
+        """
+        重写父类选股方法：直接使用因子综合得分（_composite_scores_cache）选股，
+        与 UI 因子面板保持一致，不再重复使用 StockSelector 的技术打分。
+        降级策略：若因子缓存不可用，则回退到父类逻辑。
+        """
+        date_str = getattr(self, '_current_rebalance_date', None)
+
+        if date_str and date_str in self._composite_scores_cache:
+            scores_dict = self._composite_scores_cache[date_str]
+            if not scores_dict:
+                return super()._select_candidates()
+
+            # 按因子综合得分降序，取前 max_positions 只
+            sorted_items = sorted(scores_dict.items(), key=lambda x: x[1], reverse=True)
+            candidates = []
+            for symbol, score in sorted_items[:self.max_positions]:
+                stock_score = StockScore(symbol=symbol)
+                stock_score.composite_score = score
+                candidates.append(stock_score)
+            return candidates
+
+        # 降级：因子缓存不可用时使用父类技术打分
+        logger.warning("因子综合得分缓存不可用（date=%s），回退到父类 StockSelector 选股", date_str)
+        return super()._select_candidates()
+
     def _rebalance(self, date, prices: Dict[str, float]):
         """调仓：重写父类方法，增加因子信息记录和调仓快照"""
         self._maybe_update_ic_weights_for_rebalance()
         date_str = str(date)[:10]
+
+        # 记录当前调仓日期，供 _select_candidates() 读取因子缓存
+        self._current_rebalance_date = date_str
 
         # 0. 排除当天止损卖出的股票
         stop_loss_sold = self._stop_loss_sold_today.copy()
