@@ -37,10 +37,15 @@ def init_factor_tables(db_path: str = None):
             trade_date TEXT NOT NULL,
             factor_name TEXT NOT NULL,
             factor_value REAL,
+            source_pub_date TEXT,
             update_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             UNIQUE(symbol, trade_date, factor_name)
         )
     ''')
+    cursor.execute("PRAGMA table_info(factor_values)")
+    existing_cols = {row[1] for row in cursor.fetchall()}
+    if "source_pub_date" not in existing_cols:
+        cursor.execute("ALTER TABLE factor_values ADD COLUMN source_pub_date TEXT")
 
     # 创建索引
     cursor.execute('''
@@ -105,10 +110,16 @@ def init_factor_metadata(db_path: str = None):
         # 盈利因子（高盈利买入）
         ('roe', 'profitability', 'positive', '净资产收益率', 'net_profit / total_equity'),
         ('roe_avg', 'profitability', 'positive', '平均净资产收益率', 'avg(net_profit / total_equity)'),
-        ('roa', 'profitability', 'positive', '资产收益率', 'net_profit / total_assets'),
         ('gross_margin', 'profitability', 'positive', '毛利率', 'gross_profit / revenue'),
         ('net_margin', 'profitability', 'positive', '净利率', 'net_profit / revenue'),
+        ('np_margin', 'profitability', 'positive', '销售净利率', 'net_profit / revenue'),
+        ('gp_margin', 'profitability', 'positive', '销售毛利率', '(revenue-cost)/revenue'),
         ('eps_ttm', 'profitability', 'positive', '每股收益(TTM)', 'net_profit_ttm / total_shares'),
+        ('roa', 'profitability', 'positive', '总资产收益率', 'net_profit / total_assets'),
+        ('net_profit', 'profitability', 'positive', '净利润', 'profit_data.net_profit'),
+        ('mb_revenue', 'profitability', 'positive', '主营业务收入', 'profit_data.business_income'),
+        ('total_share', 'profitability', 'neutral', '总股本', 'profit_data.total_share'),
+        ('liqa_share', 'profitability', 'neutral', '流通股本', 'profit_data.liqa_share'),
         ('asset_turnover', 'profitability', 'positive', '资产周转率', 'revenue / total_assets'),
 
         # 成长因子（高成长买入）
@@ -125,35 +136,37 @@ def init_factor_metadata(db_path: str = None):
 
         # 现金流因子（现金流优良买入）
         ('cash_to_profit', 'cashflow', 'positive', '经营现金流/净利润', 'oper_cash_flow / net_profit'),
-        ('fcf', 'cashflow', 'positive', '自由现金流', 'oper_cash_flow - capex'),
-        ('cash_yield', 'cashflow', 'positive', '现金市值比', 'oper_cash_flow / market_cap'),
 
         # 衍生因子
-        ('pb_roe', 'derived', 'neutral', 'PB/ROE', 'PB / ROE'),
-        ('pe_growth', 'derived', 'negative', 'PE/增长率', 'PE / profit_growth'),
-        ('altman_z', 'derived', 'positive', 'Altman Z指数', '1.2*X1 + 1.4*X2 + 3.3*X3 + 0.6*X4 + 1.0*X5'),
+        ('pb_roe_roe', 'derived', 'negative', 'PB/ROE/ROE', 'PB / ((ROE*100) * (ROE*100))'),
+        ('pe_roe', 'derived', 'negative', 'PE/ROE', 'PE / (ROE*100)'),
     ]
 
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
 
-    # 先检查是否已有数据
+    # 持续增量写入，确保新增因子元数据能够自动补齐
+    for factor_name, category, direction, description, formula in metadata:
+        cursor.execute('''
+            INSERT OR IGNORE INTO factor_metadata
+            (factor_name, factor_category, factor_direction, description, formula)
+            VALUES (?, ?, ?, ?, ?)
+        ''', (factor_name, category, direction, description, formula))
+        cursor.execute('''
+            UPDATE factor_metadata
+            SET factor_category = ?, factor_direction = ?, description = ?, formula = ?
+            WHERE factor_name = ?
+        ''', (category, direction, description, formula, factor_name))
+
+    # 清理已废弃的估算型因子
+    cursor.execute(
+        "DELETE FROM factor_metadata WHERE factor_name IN ('fcf', 'cash_yield', 'pb_roe', 'pe_growth', 'altman_z')"
+    )
+
+    conn.commit()
     cursor.execute('SELECT COUNT(*) FROM factor_metadata')
     count = cursor.fetchone()[0]
-
-    if count == 0:
-        # 插入元数据
-        for factor_name, category, direction, description, formula in metadata:
-            cursor.execute('''
-                INSERT OR IGNORE INTO factor_metadata
-                (factor_name, factor_category, factor_direction, description, formula)
-                VALUES (?, ?, ?, ?, ?)
-            ''', (factor_name, category, direction, description, formula))
-
-        conn.commit()
-        print(f"[OK] 因子元数据初始化完成，共 {len(metadata)} 个因子")
-    else:
-        print(f"[SKIP] 因子元数据已存在 ({count} 个因子)，跳过初始化")
+    print(f"[OK] 因子元数据初始化完成，当前共 {count} 个因子")
 
     conn.close()
 

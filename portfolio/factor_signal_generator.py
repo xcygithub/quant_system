@@ -27,6 +27,7 @@ class FactorSignalGenerator:
         self,
         factor_weights: Dict[str, float] = None,
         ic_weights: Dict[str, float] = None,
+        factor_directions: Dict[str, int] = None,
         use_ic_weighted: bool = True,
         buy_threshold: float = 80.0,  # 百分位 > 80 买入
         sell_threshold: float = 20.0  # 百分位 < 20 卖出
@@ -43,9 +44,15 @@ class FactorSignalGenerator:
         """
         self.base_weights = factor_weights or {}
         self.ic_weights = ic_weights or {}
+        self.factor_directions = factor_directions or self._infer_factor_directions(self.base_weights)
         self.use_ic_weighted = use_ic_weighted
         self.buy_threshold = buy_threshold
         self.sell_threshold = sell_threshold
+
+    def _infer_factor_directions(self, factor_weights: Dict[str, float]) -> Dict[str, int]:
+        """根据配置的因子名称推断因子方向。"""
+        config = FactorSignalConfig(factor_weights=factor_weights)
+        return config.factor_directions
 
     def generate_signals(
         self,
@@ -168,26 +175,25 @@ class FactorSignalGenerator:
 
         for symbol in factor_data.index:
             percentile_scores[symbol] = {}
-            row = factor_data.loc[symbol]
 
             for factor_name in factor_data.columns:
                 factor_values = factor_data[factor_name].dropna()
-
 
                 if len(factor_values) < 2:
                     percentile_scores[symbol][factor_name] = 50.0
                     continue
 
-                # 使用秩次计算百分位
-                if rankdata is not None:
-                    # scipy 方式
-                    rank = rankdata(factor_values)[list(factor_data.index).index(symbol)]
-                    percentile = (rank - 1) / (len(factor_values) - 1) * 100
-                else:
-                    # pandas 方式
-                    factor_series = pd.Series(factor_values.values, index=factor_values.index)
-                    rank = factor_series.rank()[symbol]
-                    percentile = (rank - 1) / (len(factor_values) - 1) * 100
+                # 该股票在此因子上若缺失，使用中性分，避免索引越界
+                if symbol not in factor_values.index:
+                    percentile_scores[symbol][factor_name] = 50.0
+                    continue
+
+                # 使用带索引的 rank，确保 symbol 与 rank 一一对应
+                rank = factor_values.rank(method="average").loc[symbol]
+                percentile = (rank - 1) / (len(factor_values) - 1) * 100
+                # 负向因子需要反转：值越小得分越高
+                if self.factor_directions.get(factor_name, 1) < 0:
+                    percentile = 100.0 - percentile
                 percentile_scores[symbol][factor_name] = percentile
 
         return percentile_scores
@@ -269,8 +275,8 @@ class FactorSignalConfig:
         'roe', 'roa', 'roic', 'gross_margin', 'net_margin',
         'revenue_growth', 'profit_growth', 'equity_growth',
         'momentum_5', 'momentum_20', 'momentum_60',
-        'cash_to_profit', 'fcf', 'cash_yield',
-        'pb_roe', 'pe_growth', 'altman_z',
+        'cash_to_profit',
+        'pb_roe_roe', 'pe_roe',
         'current_ratio', 'quick_ratio'
     }
 
@@ -350,6 +356,7 @@ def create_signal_generator(
     return FactorSignalGenerator(
         factor_weights=weights,
         ic_weights=ic_weights,
+        factor_directions=config.get('directions'),
         use_ic_weighted=use_ic_weighted,
         buy_threshold=config.get('buy_threshold', 80.0),
         sell_threshold=config.get('sell_threshold', 20.0)

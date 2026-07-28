@@ -41,6 +41,7 @@ class QuantSystem:
         self.data_manager = DataManager(
             db_path=self.config.get('db_path', None)  # 默认使用统一的数据库路径
         )
+        print(f"[CONFIG] 当前数据库路径: {self.data_manager.db_path}")
         
         self.risk_manager = RiskManager(
             limits=RiskLimits(
@@ -55,6 +56,13 @@ class QuantSystem:
         )
         
         self.results = {}
+
+    def close(self):
+        """释放系统持有的外部资源。"""
+        try:
+            self.data_manager.close()
+        except Exception:
+            pass
     
     def run_backtest(
         self,
@@ -480,6 +488,7 @@ def demo():
     print("\n" + "="*70)
     print("✅ 演示完成！")
     print("="*70)
+    system.close()
 
 
 if __name__ == "__main__":

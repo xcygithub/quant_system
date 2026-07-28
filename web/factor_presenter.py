@@ -7,14 +7,8 @@ import numpy as np
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 import sqlite3
-import sys
-from pathlib import Path
 
-# 添加项目根目录到路径
-project_root = Path(__file__).parent.parent.parent
-sys.path.insert(0, str(project_root))
-
-from quant_system.strategy.fundamental_factors import FundamentalFactors
+from strategy.fundamental_factors import FundamentalFactors
 
 
 class FactorPresenter:
@@ -28,6 +22,8 @@ class FactorPresenter:
     """
 
     # 因子中文名称映射
+    REMOVED_FACTORS = {'fcf', 'cash_yield', 'pb_roe', 'pe_growth', 'altman_z'}
+
     FACTOR_NAMES_CN = {
         # 估值因子
         'pe': '市盈率(PE)',
@@ -38,10 +34,16 @@ class FactorPresenter:
         # 盈利因子
         'roe': '净资产收益率(ROE)',
         'roe_avg': '平均净资产收益率',
-        'roa': '资产收益率(ROA)',
         'gross_margin': '毛利率',
         'net_margin': '净利率',
+        'np_margin': '销售净利率(npMargin)',
+        'gp_margin': '销售毛利率(gpMargin)',
         'eps_ttm': '每股收益(TTM)',
+        'roa': '总资产收益率(ROA)',
+        'net_profit': '净利润(netProfit)',
+        'mb_revenue': '主营业务收入(MBRevenue)',
+        'total_share': '总股本(totalShare)',
+        'liqa_share': '流通股本(liqaShare)',
         'asset_turnover': '资产周转率',
         # 成长因子
         'revenue_growth': '营收增长率',
@@ -58,9 +60,8 @@ class FactorPresenter:
         'fcf': '自由现金流',
         'cash_yield': '现金市值比',
         # 衍生
-        'pb_roe': 'PB/ROE',
-        'pe_growth': 'PE/增长率',
-        'altman_z': 'Altman Z指数',
+        'pb_roe_roe': 'PB/ROE/ROE',
+        'pe_roe': 'PE/ROE',
     }
 
     # 因子方向说明
@@ -91,6 +92,44 @@ class FactorPresenter:
             db_path: 数据库路径
         """
         self.ff = FundamentalFactors(db_path)
+
+    def resolve_trade_date(self, date_option: str = "最新") -> str:
+        """
+        将 UI 的日期选项解析为查询日期。
+
+        Args:
+            date_option: "最新" 或 "YYYY-MM-DD" 或 "YYYY-MM-DD (...)"
+
+        Returns:
+            查询日期 YYYY-MM-DD
+        """
+        if date_option == "最新" or not date_option:
+            return datetime.now().strftime('%Y-%m-%d')
+        return date_option.split(' ')[0]
+
+    def get_factors_on_date(self, symbol: str, date_option: str = "最新") -> Dict:
+        """
+        获取指定日期选项下的因子值与日期上下文。
+
+        Args:
+            symbol: 股票代码
+            date_option: "最新" 或具体日期（可含标签）
+
+        Returns:
+            {
+                "factors": Dict[str, float],
+                "query_date": str,
+                "report_date": str
+            }
+        """
+        query_date = self.resolve_trade_date(date_option)
+        report_date = self.ff.get_report_date(query_date, symbol)
+        factors = self.ff.calculate_all_factors(symbol, query_date)
+        return {
+            'factors': factors,
+            'query_date': query_date,
+            'report_date': report_date,
+        }
 
     def get_single_stock_factors(self, symbol: str,
                                   trade_date: str = None,
@@ -148,23 +187,24 @@ class FactorPresenter:
         Returns:
             DataFrame，包含股票代码、因子值、排名
         """
-        rows = []
         metadata = self._get_factor_metadata()
         meta = metadata.get(factor_name, {})
         direction = meta.get('direction', 'positive')
 
-        for symbol in symbols:
-            try:
-                factors = self.ff.calculate_all_factors(symbol, trade_date)
-                value = factors.get(factor_name, 0)
+        panel = self.ff.calculate_factor_panel(symbols, trade_date)
+        if panel.empty or factor_name not in panel.columns:
+            return pd.DataFrame()
 
-                if value != 0:  # 只保留非零值
-                    rows.append({
-                        '股票代码': symbol,
-                        '因子值': value,
-                    })
-            except Exception as e:
+        rows = []
+        for symbol in symbols:
+            if symbol not in panel.index:
                 continue
+            value = panel.loc[symbol, factor_name]
+            if pd.notna(value) and value != 0:
+                rows.append({
+                    '股票代码': symbol,
+                    '因子值': float(value),
+                })
 
         if not rows:
             return pd.DataFrame()
@@ -194,16 +234,22 @@ class FactorPresenter:
         Returns:
             DataFrame，宽表格式
         """
+        panel = self.ff.calculate_factor_panel(symbols, trade_date)
+        if panel.empty:
+            return pd.DataFrame()
+
         rows = []
         for symbol in symbols:
-            try:
-                factors = self.ff.calculate_all_factors(symbol, trade_date)
-                row = {'股票代码': symbol}
-                for fname in factor_names:
-                    row[fname] = factors.get(fname, 0)
-                rows.append(row)
-            except Exception as e:
+            if symbol not in panel.index:
                 continue
+            row = {'股票代码': symbol}
+            for fname in factor_names:
+                if fname in panel.columns:
+                    value = panel.loc[symbol, fname]
+                    row[fname] = float(value) if pd.notna(value) else 0
+                else:
+                    row[fname] = 0
+            rows.append(row)
 
         if not rows:
             return pd.DataFrame()
@@ -232,8 +278,9 @@ class FactorPresenter:
 
         # 比率类因子转为百分比
         ratio_factors = {
-            'roe', 'roe_avg', 'roa', 'gross_margin', 'net_margin',
-            'revenue_growth', 'profit_growth', 'equity_growth', 'profit_cagr',
+            'roe', 'roe_avg', 'gross_margin', 'net_margin',
+            'np_margin', 'gp_margin',
+            'roa', 'revenue_growth', 'profit_growth', 'equity_growth', 'profit_cagr',
             'debt_ratio', 'current_ratio', 'quick_ratio', 'cash_to_profit',
             'cash_yield', 'asset_turnover', 'equity_multiplier'
         }
@@ -241,7 +288,7 @@ class FactorPresenter:
             return f"{value * 100:.2f}%"
 
         # 金额类因子
-        amount_factors = {'fcf'}
+        amount_factors = {'fcf', 'net_profit', 'mb_revenue'}
         if factor_name in amount_factors:
             if abs(value) >= 1e8:
                 return f"{value / 1e8:.2f}亿"
@@ -249,6 +296,14 @@ class FactorPresenter:
                 return f"{value / 1e4:.2f}万"
             else:
                 return f"{value:.2f}"
+
+        share_factors = {'total_share', 'liqa_share'}
+        if factor_name in share_factors:
+            if abs(value) >= 1e8:
+                return f"{value / 1e8:.2f}亿股"
+            elif abs(value) >= 1e4:
+                return f"{value / 1e4:.2f}万股"
+            return f"{value:.0f}股"
 
         # 其他保留4位小数
         return f"{value:.4f}"
@@ -271,7 +326,10 @@ class FactorPresenter:
                 'factor_direction': 'direction',
                 'factor_value': 'value'
             })
-            return df.set_index('factor_name').to_dict('index')
+            metadata = df.set_index('factor_name').to_dict('index')
+            for removed_factor in self.REMOVED_FACTORS:
+                metadata.pop(removed_factor, None)
+            return metadata
         except Exception as e:
             return {}
         finally:
@@ -347,20 +405,23 @@ class FactorPresenter:
         Returns:
             {股票代码: {因子名: 因子值, ...}, ...}
         """
-        results = {}
+        panel = self.ff.calculate_factor_panel(symbols, trade_date)
+        results: Dict[str, Dict] = {}
         total = len(symbols)
 
         for i, symbol in enumerate(symbols):
-            try:
-                factors = self.ff.calculate_all_factors(symbol, trade_date)
-                results[symbol] = factors
-
-                if progress_callback:
-                    progress_callback(i + 1, total)
-            except Exception as e:
+            if symbol in panel.index:
+                factor_row = panel.loc[symbol].to_dict()
+                factor_row.pop('trade_date', None)
+                results[symbol] = {
+                    key: float(value)
+                    for key, value in factor_row.items()
+                    if pd.notna(value)
+                }
+            else:
                 results[symbol] = {}
-                if progress_callback:
-                    progress_callback(i + 1, total)
+            if progress_callback:
+                progress_callback(i + 1, total)
 
         return results
 

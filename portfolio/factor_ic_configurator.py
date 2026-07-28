@@ -7,6 +7,7 @@ import numpy as np
 from typing import Dict, List, Optional, Any
 import json
 import sqlite3
+from config import DATABASE_PATH
 
 
 class FactorICConfigurator:
@@ -46,7 +47,7 @@ class FactorICConfigurator:
         Args:
             db_path: 数据库路径
         """
-        self.db_path = db_path or 'C:/Users/FY/WorkBuddy/Claw/quant_data.db'
+        self.db_path = db_path or str(DATABASE_PATH)
 
     def load_ic_stats(
         self,
@@ -435,7 +436,7 @@ class ICStatsCalculator:
     """
 
     def __init__(self, db_path: str = None):
-        self.db_path = db_path or 'C:/Users/FY/WorkBuddy/Claw/quant_data.db'
+        self.db_path = db_path or str(DATABASE_PATH)
 
     def calculate_and_save_ic_stats(
         self,

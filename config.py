@@ -7,8 +7,8 @@
 from pathlib import Path
 
 # ============ 项目路径 ============
-# 项目根目录
-PROJECT_ROOT = Path(__file__).parent.parent.resolve()
+# 项目根目录（config.py 所在目录）
+PROJECT_ROOT = Path(__file__).parent.resolve()
 
 # ============ 数据库配置 ============
 # 主数据库路径（行情数据）

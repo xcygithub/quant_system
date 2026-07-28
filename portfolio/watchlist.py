@@ -4,11 +4,109 @@
 """
 import json
 import os
+import re
 from pathlib import Path
 from typing import List, Dict, Optional, Set
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
 import pandas as pd
+
+# 默认指数（展示在自选股默认组，但业务计算中默认排除）
+DEFAULT_BENCHMARK_INDICES: Dict[str, str] = {
+    "399001.SZ": "深圳成指",
+    "399006.SZ": "创业板指",
+    "000001.SH": "上证指数",
+    "000688.SH": "科创50",
+}
+
+
+def _parse_symbol_input(raw_symbol: str) -> tuple[str, str]:
+    """解析股票输入，返回 (symbol_text, inferred_name)。"""
+    raw_symbol = (raw_symbol or "").strip()
+    if not raw_symbol:
+        return "", ""
+
+    # 支持：紫金矿业(SH:601899) / 紫金矿业（SH:601899）
+    match = re.match(
+        r"^(?P<name>.+?)\s*[（(]\s*(?P<ex>SH|SZ|BJ)\s*[:：]\s*(?P<code>\d{6})\s*[)）]\s*$",
+        raw_symbol,
+        flags=re.IGNORECASE,
+    )
+    if match:
+        name = match.group("name").strip()
+        ex = match.group("ex").upper()
+        code = match.group("code").strip()
+        return f"{code}.{ex}", name
+
+    # 支持：SH:601899 / SZ:000001（含中文冒号）
+    ex_match = re.match(r"^(?P<ex>SH|SZ|BJ)\s*[:：]\s*(?P<code>\d{6})$", raw_symbol, flags=re.IGNORECASE)
+    if ex_match:
+        ex = ex_match.group("ex").upper()
+        code = ex_match.group("code").strip()
+        return f"{code}.{ex}", ""
+
+    # 兼容脏数据：紫金矿业(SH:601899).SZ / 紫金矿业 SH:601899
+    embedded_match = re.search(
+        r"(?P<ex>SH|SZ|BJ)\s*[:：]\s*(?P<code>\d{6})",
+        raw_symbol,
+        flags=re.IGNORECASE,
+    )
+    if embedded_match:
+        ex = embedded_match.group("ex").upper()
+        code = embedded_match.group("code").strip()
+        # 提取括号前的名称（如果存在）
+        name_match = re.match(r"^(?P<name>.+?)\s*[（(]", raw_symbol)
+        inferred_name = name_match.group("name").strip() if name_match else ""
+        return f"{code}.{ex}", inferred_name
+
+    return raw_symbol, ""
+
+
+def _normalize_symbol_text(symbol: str) -> str:
+    """标准化股票/指数代码格式。"""
+    symbol, _ = _parse_symbol_input(symbol)
+    symbol = symbol.strip().upper()
+    if not symbol:
+        return symbol
+
+    # 兼容 "SZ:399001" / "SH:000001" 写法
+    if ":" in symbol:
+        prefix, code = symbol.split(":", 1)
+        code = code.strip()
+        if prefix == "SH":
+            return f"{code}.SH"
+        if prefix == "SZ":
+            return f"{code}.SZ"
+        if prefix == "BJ":
+            return f"{code}.BJ"
+
+    # 如果已包含后缀，直接返回
+    if symbol.endswith((".SH", ".SZ", ".HK", ".BJ")):
+        return symbol
+
+    # 根据代码前缀添加后缀
+    if symbol.startswith(("6", "5", "9")):
+        return f"{symbol}.SH"
+    if symbol.startswith(("0", "1", "2", "3")):
+        return f"{symbol}.SZ"
+    if symbol.startswith(("4", "8")):
+        return f"{symbol}.BJ"
+    return f"{symbol}.SZ"
+
+
+def is_benchmark_symbol(symbol: str) -> bool:
+    """判断是否为系统默认指数。"""
+    return _normalize_symbol_text(symbol) in DEFAULT_BENCHMARK_INDICES
+
+
+def filter_out_benchmark_symbols(symbols: List[str]) -> List[str]:
+    """过滤默认指数代码。"""
+    return [s for s in symbols if not is_benchmark_symbol(s)]
+
+
+def filter_out_benchmark_stocks(stocks: List["StockInfo"]) -> List["StockInfo"]:
+    """过滤默认指数股票对象。"""
+    return [s for s in stocks if not is_benchmark_symbol(s.symbol)]
 
 
 @dataclass
@@ -69,6 +167,35 @@ class WatchlistManager:
         self._watchlist: Dict[str, StockInfo] = {}
         self._groups: Set[str] = {"默认"}
         self._load()
+        self._ensure_default_benchmark_indices()
+
+    def _ensure_default_benchmark_indices(self):
+        """确保默认指数存在于“默认”分组。"""
+        changed = False
+        if "默认" not in self._groups:
+            self._groups.add("默认")
+            changed = True
+
+        for symbol, name in DEFAULT_BENCHMARK_INDICES.items():
+            norm_symbol = self._normalize_symbol(symbol)
+            stock = self._watchlist.get(norm_symbol)
+            if stock is None:
+                self._watchlist[norm_symbol] = StockInfo(
+                    symbol=norm_symbol,
+                    name=name,
+                    group="默认",
+                    notes="系统默认指数（默认不参与回测/财务更新/因子计算）",
+                )
+                changed = True
+            else:
+                if not stock.name:
+                    stock.name = name
+                    changed = True
+                if stock.group != "默认":
+                    stock.group = "默认"
+                    changed = True
+        if changed:
+            self._save()
 
     def _load(self):
         """从文件加载自选股"""
@@ -79,12 +206,31 @@ class WatchlistManager:
 
                 # 加载自选股
                 stocks = data.get('stocks', [])
+                has_symbol_fix = False
                 for stock_data in stocks:
                     stock = StockInfo(**stock_data)
-                    self._watchlist[stock.symbol] = stock
+                    normalized_symbol = self._normalize_symbol(stock.symbol)
+                    if normalized_symbol != stock.symbol:
+                        has_symbol_fix = True
+                        stock.symbol = normalized_symbol
+                    existing = self._watchlist.get(normalized_symbol)
+                    if existing is None:
+                        self._watchlist[normalized_symbol] = stock
+                    else:
+                        # 冲突时保留名称更完整的一份，避免清洗后覆盖有用信息
+                        if (not existing.name or existing.name == existing.symbol) and stock.name:
+                            existing.name = stock.name
+                        if stock.group:
+                            existing.group = stock.group
+                        if stock.notes:
+                            existing.notes = stock.notes
+                        if stock.tags:
+                            existing.tags = stock.tags
 
                 # 加载分组
                 self._groups = set(data.get('groups', ["默认"]))
+                if has_symbol_fix:
+                    self._save()
 
             except Exception as e:
                 print(f"加载自选股失败: {e}")
@@ -122,8 +268,11 @@ class WatchlistManager:
         Returns:
             是否添加成功
         """
+        original_symbol = symbol
         # 标准化代码格式
         symbol = self._normalize_symbol(symbol)
+        _, inferred_name = _parse_symbol_input(original_symbol)
+        name = (name or "").strip() or inferred_name
 
         if symbol in self._watchlist:
             # 已存在，更新信息
@@ -358,21 +507,7 @@ class WatchlistManager:
 
     def _normalize_symbol(self, symbol: str) -> str:
         """标准化股票代码格式"""
-        symbol = symbol.strip().upper()
-
-        # 如果已包含后缀，直接返回
-        if symbol.endswith(('.SH', '.SZ', '.HK')):
-            return symbol
-
-        # 根据代码前缀添加后缀
-        if symbol.startswith(('6', '5', '9')):
-            return f"{symbol}.SH"
-        elif symbol.startswith(('0', '1', '3', '2')):
-            return f"{symbol}.SZ"
-        elif symbol.startswith(('4', '8')):
-            return f"{symbol}.BJ"  # 北交所
-
-        return f"{symbol}.SZ"  # 默认深市
+        return _normalize_symbol_text(symbol)
 
     def get_stock_count(self) -> int:
         """获取自选股数量"""

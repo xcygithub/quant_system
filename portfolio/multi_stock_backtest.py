@@ -8,9 +8,12 @@ from typing import Dict, List, Optional, Callable, Any, Tuple
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from collections import defaultdict
+import logging
 
 from .selector import StockSelector, StockScore, create_selector
 from .position_sizer import PositionSizer, PositionResult, create_position_sizer
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -145,7 +148,8 @@ class MultiStockBacktest:
         selector_method: str = "composite",
         max_single_position: float = 0.3,
         max_total_position: float = 0.8,
-        stop_loss: float = 0.0  # 止损比例（负数，如-0.1表示亏损10%时止损，0表示不止损）
+        stop_loss: float = 0.0,  # 止损比例（负数，如-0.1表示亏损10%时止损，0表示不止损）
+        progress_callback: Optional[Callable[[int, str], bool]] = None
     ):
         """
         初始化多股票回测引擎
@@ -172,6 +176,7 @@ class MultiStockBacktest:
         self.max_single_position = max_single_position
         self.max_total_position = max_total_position
         self.stop_loss = stop_loss
+        self.progress_callback = progress_callback
 
         # 状态
         self.cash = initial_capital
@@ -188,6 +193,7 @@ class MultiStockBacktest:
         # 回测数据
         self.stock_data: Dict[str, pd.DataFrame] = {}
         self.signals: Dict[str, pd.Series] = {}
+        self.stock_names: Dict[str, str] = {}
 
         # 选股器和仓位分配器
         self.selector = create_selector(method=selector_method, top_n=max_positions)
@@ -203,6 +209,26 @@ class MultiStockBacktest:
 
         # 记录当天止损卖出的股票（避免当天又被买回）
         self._stop_loss_sold_today: set = set()
+
+    def _emit_progress(self, percent: int, message: str, print_log: bool = True) -> bool:
+        """
+        发出回测进度消息。
+
+        Returns:
+            bool: True 表示继续执行；False 表示外部请求中断。
+        """
+        percent = max(0, min(100, int(percent)))
+        if print_log:
+            print(f"[回测进度 {percent:>3}%] {message}")
+        logger.info("回测进度: percent=%s message=%s", percent, message)
+
+        if self.progress_callback is None:
+            return True
+        try:
+            return self.progress_callback(percent, message)
+        except Exception as exc:
+            logger.warning("进度回调执行失败: %s", exc)
+            return True
 
     def set_data(
         self,
@@ -235,6 +261,7 @@ class MultiStockBacktest:
         print(f"\n{'='*60}")
         print(f"开始多股票回测 | 初始资金: {self.initial_capital:,.0f}")
         print(f"{'='*60}")
+        self._emit_progress(55, "初始化回测引擎并对齐交易日")
 
         # 同步所有股票的日期
         all_dates = self._get_common_dates(start_date, end_date)
@@ -244,6 +271,7 @@ class MultiStockBacktest:
             return {}
 
         print(f"回测期间: {all_dates[0]} ~ {all_dates[-1]}, 共 {len(all_dates)} 个交易日")
+        self._emit_progress(58, f"交易日对齐完成，共 {len(all_dates)} 天")
 
         # 重置状态
         self.cash = self.initial_capital
@@ -255,8 +283,10 @@ class MultiStockBacktest:
         self.trade_details = []
         self.trade_id_counter = 0
         self.active_trades = {}
+        self._emit_progress(60, "开始逐日回放交易")
 
         # 遍历每个交易日
+        progress_step = max(1, len(all_dates) // 20)
         for i, date in enumerate(all_dates):
             self.trading_days = i
 
@@ -275,6 +305,15 @@ class MultiStockBacktest:
             should_rebalance = (i - self.last_rebalance_day) >= self.rebalance_days
             needs_initial_position = (len(self.positions) == 0 and self.cash > 0)
 
+            if i == 0 or i % progress_step == 0 or i == len(all_dates) - 1:
+                loop_progress = 60 + int(((i + 1) / len(all_dates)) * 30)
+                date_str = pd.to_datetime(date).strftime("%Y-%m-%d")
+                if not self._emit_progress(
+                    loop_progress,
+                    f"处理到 {date_str}，持仓 {len(self.positions)} 只，现金 {self.cash:,.0f} 元"
+                ):
+                    return {"error": "回测已中断"}
+
             # 【优先级最高】第一步：全量检查止损（每天必做！）
             self._check_stop_loss(date, current_prices)
 
@@ -285,6 +324,13 @@ class MultiStockBacktest:
                 continue
 
             # 【调仓日核心流程】
+            date_str = pd.to_datetime(date).strftime("%Y-%m-%d")
+            self._emit_progress(
+                60 + int(((i + 1) / len(all_dates)) * 30),
+                f"{date_str} 进入调仓流程（调仓标记={should_rebalance}, 首次建仓={needs_initial_position}）",
+                print_log=True
+            )
+
             # 第二步：检查卖出信号
             self._check_sell_signals(date, current_prices)
 
@@ -296,6 +342,7 @@ class MultiStockBacktest:
             self._record_snapshot(date)
 
         # 回测结束，清空所有持仓（按最后一天收盘价）
+        self._emit_progress(92, "交易日回放结束，开始收尾平仓")
         if self.positions:
             last_prices = self._get_prices_on_date(all_dates[-1])
             self._close_all_positions(all_dates[-1], last_prices, "回测结束")
@@ -306,9 +353,12 @@ class MultiStockBacktest:
             self.trade_details.append(td)
 
         # 计算结果
+        self._emit_progress(95, "正在汇总绩效指标与交易统计")
         results = self._calculate_results(all_dates)
 
+        self._emit_progress(98, "正在输出回测摘要")
         self._print_summary(results)
+        self._emit_progress(100, "多股票回测完成")
 
         return results
 
@@ -543,6 +593,9 @@ class MultiStockBacktest:
             reason: 买入原因
             stock_name: 股票中文名称
         """
+        if not stock_name:
+            stock_name = self.stock_names.get(symbol, "")
+
         if quantity <= 0 or price <= 0:
             return
 

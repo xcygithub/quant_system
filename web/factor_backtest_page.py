@@ -5,23 +5,18 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
+import sqlite3
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any
 
 # 导入后端模块
-try:
-    from quant_system.portfolio.multi_factor_backtest import MultiFactorBacktest, run_multi_factor_backtest
-    from quant_system.portfolio.factor_ic_configurator import FactorICConfigurator
-    from quant_system.portfolio.factor_signal_generator import FactorSignalGenerator
-    from quant_system.data.data_manager import DataManager
-    from quant_system.data.data_provider import CacheOnlyProvider
-except ImportError:
-    from ..portfolio.multi_factor_backtest import MultiFactorBacktest, run_multi_factor_backtest
-    from ..portfolio.factor_ic_configurator import FactorICConfigurator
-    from ..portfolio.factor_signal_generator import FactorSignalGenerator
-    from ..data.data_manager import DataManager
+from data.data_manager import DataManager
+from data.data_provider import CacheOnlyProvider
+from strategy.fundamental_factors import FundamentalFactors
+from portfolio.watchlist import filter_out_benchmark_stocks, filter_out_benchmark_symbols
+from web.services.backtest_service import run_multi_factor_strategy_backtest
 
 
 # =============================================================================
@@ -31,10 +26,18 @@ except ImportError:
 FACTOR_CATEGORIES = {
     "基本面因子": {
         "roe": "ROE（净资产收益率）",
+        "roe_avg": "净资产收益率(平均)",
         "roa": "ROA（资产收益率）",
         "gross_margin": "毛利率",
         "net_margin": "净利率",
+        "np_margin": "销售净利率(npMargin)",
+        "gp_margin": "销售毛利率(gpMargin)",
         "eps": "EPS（每股收益）",
+        "eps_ttm": "epsTTM（每股收益TTM）",
+        "net_profit": "netProfit（净利润）",
+        "mb_revenue": "MBRevenue（主营业务收入）",
+        "total_share": "totalShare（总股本）",
+        "liqa_share": "liqaShare（流通股本）",
         "revenue_growth": "营收增长率",
         "profit_growth": "利润增长率",
         "asset_turnover": "资产周转率"
@@ -77,6 +80,32 @@ DEFAULT_FACTORS = {
 # 页面渲染函数
 # =============================================================================
 
+def _render_page_title():
+    """渲染页面标题"""
+    st.markdown(
+        """
+        <div class="section-title">
+            <div class="main">📊 多因子回测</div>
+            <div class="desc">统一配置因子、权重与风控参数，快速评估组合策略稳定性</div>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+
+def _render_subsection_title(title: str, icon: str = "📌", desc: str = ""):
+    """渲染子分区标题"""
+    subtitle = f'<div class="desc">{desc}</div>' if desc else ""
+    st.markdown(
+        f"""
+        <div class="section-title" style="margin-top: 0;">
+            <div class="main">{icon} {title}</div>
+            {subtitle}
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
 def render_factor_backtest_page(dm: DataManager, wl_manager):
     """
     渲染因子回测页面
@@ -85,7 +114,7 @@ def render_factor_backtest_page(dm: DataManager, wl_manager):
         dm: DataManager 实例
         wl_manager: WatchlistManager 实例
     """
-    st.header("📊 多因子回测")
+    _render_page_title()
 
     # 初始化 session state
     _init_session_state()
@@ -116,7 +145,7 @@ def _render_sidebar_config(dm: DataManager, wl_manager) -> Dict[str, Any]:
     Returns:
         配置字典
     """
-    st.markdown("### 📋 因子配置")
+    _render_subsection_title("因子配置", "📋", "选择可解释的因子组合并设置加权方式")
 
     # ---------- 因子选择 ----------
     selected_factors = {}
@@ -201,7 +230,7 @@ def _render_sidebar_config(dm: DataManager, wl_manager) -> Dict[str, Any]:
 
     # ---------- 回测参数 ----------
     st.markdown("---")
-    st.markdown("### ⚙️ 回测参数")
+    _render_subsection_title("回测参数", "⚙️", "设置股票池、资金规模、调仓与风控约束")
 
     # 股票池来源
     stock_source = st.selectbox(
@@ -213,12 +242,12 @@ def _render_sidebar_config(dm: DataManager, wl_manager) -> Dict[str, Any]:
 
     symbols = []
     if stock_source == "📈 自选股":
-        watchlist_stocks = wl_manager.get_all_stocks()
+        watchlist_stocks = filter_out_benchmark_stocks(wl_manager.get_all_stocks())
         if watchlist_stocks:
             symbols = [s.symbol for s in watchlist_stocks]
             st.caption(f"将使用 {len(symbols)} 只自选股")
         else:
-            st.warning("自选股为空，请先添加股票")
+            st.warning("自选股为空（默认指数已自动排除），请先添加股票")
     else:
         stock_list_input = st.text_area(
             "股票代码（逗号分隔）",
@@ -227,6 +256,7 @@ def _render_sidebar_config(dm: DataManager, wl_manager) -> Dict[str, Any]:
             key="mfbt_stock_list"
         )
         symbols = [s.strip() for s in stock_list_input.split(",") if s.strip()]
+        symbols = filter_out_benchmark_symbols(symbols)
 
     # 回测期间
     col1, col2 = st.columns(2)
@@ -239,7 +269,7 @@ def _render_sidebar_config(dm: DataManager, wl_manager) -> Dict[str, Any]:
     with col2:
         end_date = st.date_input(
             "结束日期",
-            datetime(2024, 3, 19),
+            datetime.now().date(),
             key="mfbt_end_date"
         )
 
@@ -299,7 +329,14 @@ def _render_sidebar_config(dm: DataManager, wl_manager) -> Dict[str, Any]:
 
     # ---------- 执行按钮 ----------
     st.markdown("---")
-    st.markdown("### 🚀 执行回测")
+    _render_subsection_title("执行回测", "🚀", "检查参数后启动策略回放")
+
+    auto_backfill_to_start = st.checkbox(
+        "回测前自动补齐历史行情到开始日期（会写入数据库）",
+        value=True,
+        key="mfbt_auto_backfill_to_start",
+        help="开启后将对股票池尝试在线补数并写入数据库，再开始回测。"
+    )
 
     col1, col2 = st.columns(2)
     with col1:
@@ -337,6 +374,7 @@ def _render_sidebar_config(dm: DataManager, wl_manager) -> Dict[str, Any]:
         'position_method': position_method,
         'stop_loss': stop_loss,
         'max_single_position': max_single_position,
+        'auto_backfill_to_start': auto_backfill_to_start,
         'run_button': run_button,
         'stop_button': stop_button,
         'progress_bar': progress_bar,
@@ -392,6 +430,21 @@ def _execute_backtest(dm: DataManager, wl_manager, config: Dict[str, Any]):
             return True
 
         with st.spinner("正在运行回测，请稍候..."):
+            if config.get('auto_backfill_to_start', False):
+                progress_callback(5, "回测前补齐历史数据并写库")
+                backfill_stats = _backfill_stock_data_to_start_date(
+                    dm=dm,
+                    symbols=symbols,
+                    start_date=config['start_date'],
+                    end_date=config['end_date'],
+                )
+                if backfill_stats["attempted"] > 0:
+                    st.info(
+                        f"已执行历史补齐：尝试 {backfill_stats['attempted']} 只，"
+                        f"新增/更新 {backfill_stats['updated']} 只，"
+                        f"仍无更早数据 {backfill_stats['unchanged']} 只。"
+                    )
+
             # 获取股票数据
             progress_callback(10, "获取股票数据")
             stock_data = _fetch_stock_data(dm, symbols, config['start_date'], config['end_date'])
@@ -399,6 +452,23 @@ def _execute_backtest(dm: DataManager, wl_manager, config: Dict[str, Any]):
             if not stock_data:
                 st.error("无法获取股票数据")
                 return
+
+            # 计算实际可回测窗口（按股票池共同可用区间）
+            requested_start = config['start_date']
+            requested_end = config['end_date']
+            effective_start, effective_end = _compute_effective_backtest_window(
+                stock_data, requested_start, requested_end
+            )
+            if effective_start is None or effective_end is None:
+                st.error("所选股票在指定区间内无共同可回测交易日，请调整股票池或日期范围")
+                return
+            if effective_start > requested_start:
+                st.warning(
+                    f"你设置的开始日期为 {requested_start}，但当前股票池共同可用数据从 {effective_start} 才开始。"
+                    f"本次将按 {effective_start} ~ {effective_end} 执行回测。"
+                )
+            if effective_end < requested_end:
+                st.info(f"当前股票池共同可用数据截止 {effective_end}，已自动按此日期结束回测。")
 
             # 构建股票名称映射
             stock_names = {}
@@ -410,30 +480,46 @@ def _execute_backtest(dm: DataManager, wl_manager, config: Dict[str, Any]):
                     stock_names[s] = s
 
             progress_callback(30, "准备因子数据")
-
-            # 构建因子数据
             factor_data = _prepare_factor_data(stock_data, list(config['factor_weights'].keys()))
 
-            progress_callback(50, "运行多因子回测")
+            if not factor_data:
+                st.error("因子数据准备失败：未生成有效因子面板")
+                return
 
-            # 运行回测
-            results = run_multi_factor_backtest(
+            # 运行回测（统一走服务层契约校验）
+            run_result = run_multi_factor_strategy_backtest(
                 symbols=symbols,
+                db_path=dm.db_path,
                 stock_data=stock_data,
-                factor_data=factor_data,
-                start_date=config['start_date'],
-                end_date=config['end_date'],
+                start_date=effective_start,
+                end_date=effective_end,
                 initial_capital=config['initial_capital'],
                 max_positions=config['max_positions'],
                 rebalance_days=config['rebalance_days'],
                 factor_weights=config['factor_weights'],
                 use_ic_weighting=config['use_ic_weighting'],
                 ic_update_freq=config['ic_update_freq'] or 60,
+                commission_rate=0.0003,
+                max_single_position=config.get('max_single_position', 0.2),
+                max_total_position=config.get('max_total_position', 0.8),
+                stop_loss=config.get('stop_loss', 0.0),
+                factor_data=factor_data,
                 progress_callback=progress_callback,
-                stock_names=stock_names
+                stock_names=stock_names,
             )
 
-            progress_callback(100, "回测完成")
+            if run_result.get("error"):
+                st.error(run_result["error"])
+                for warning_msg in run_result.get("warnings", []):
+                    st.warning(warning_msg)
+                return
+
+            results = run_result["results"]
+            results["requested_window"] = {"start": requested_start, "end": requested_end}
+            results["effective_window"] = {"start": effective_start, "end": effective_end}
+            for warning_msg in run_result.get("warnings", []):
+                st.warning(warning_msg)
+
             config['status_text'].text("回测完成！")
 
             # 保存结果
@@ -471,6 +557,92 @@ def _fetch_stock_data(dm: DataManager, symbols: List[str], start_date: str, end_
     return stock_data
 
 
+def _compute_effective_backtest_window(
+    stock_data: Dict[str, pd.DataFrame],
+    requested_start: str,
+    requested_end: str,
+) -> tuple[Optional[str], Optional[str]]:
+    """
+    计算股票池共同可用回测窗口（交集区间）。
+
+    返回:
+        (effective_start, effective_end)
+        若无有效交集，返回 (None, None)
+    """
+    if not stock_data:
+        return None, None
+
+    req_start_dt = pd.to_datetime(requested_start)
+    req_end_dt = pd.to_datetime(requested_end)
+
+    min_dates = []
+    max_dates = []
+    for df in stock_data.values():
+        if df is None or df.empty or 'date' not in df.columns:
+            continue
+        dt_series = pd.to_datetime(df['date'], errors='coerce').dropna()
+        if dt_series.empty:
+            continue
+        min_dates.append(dt_series.min())
+        max_dates.append(dt_series.max())
+
+    if not min_dates or not max_dates:
+        return None, None
+
+    common_start_dt = max(min_dates)
+    common_end_dt = min(max_dates)
+
+    effective_start_dt = max(req_start_dt, common_start_dt)
+    effective_end_dt = min(req_end_dt, common_end_dt)
+
+    if effective_start_dt > effective_end_dt:
+        return None, None
+
+    return effective_start_dt.strftime('%Y-%m-%d'), effective_end_dt.strftime('%Y-%m-%d')
+
+
+def _backfill_stock_data_to_start_date(
+    dm: DataManager,
+    symbols: List[str],
+    start_date: str,
+    end_date: str,
+) -> Dict[str, int]:
+    """
+    尝试将股票池行情补齐到回测开始日期，并保存到数据库。
+
+    说明：
+    - 会触发 DataManager 在线获取流程（KlineManager.fetch_daily_kline）；
+    - 是否能补到开始日期取决于数据源可得性与股票上市日期。
+    """
+    cache_provider = CacheOnlyProvider(dm.db_path)
+    attempted = 0
+    updated = 0
+    unchanged = 0
+
+    for symbol in symbols:
+        try:
+            before_df = cache_provider.get_stock_data(symbol, start_date, end_date)
+            before_min = None if before_df.empty else pd.to_datetime(before_df['date']).min()
+
+            attempted += 1
+            # 调用在线路径：若数据库不完整会自动拉取并写库
+            _ = dm.get_daily_kline(symbol, start_date, end_date)
+
+            after_df = cache_provider.get_stock_data(symbol, start_date, end_date)
+            after_min = None if after_df.empty else pd.to_datetime(after_df['date']).min()
+
+            if before_min is None and after_min is not None:
+                updated += 1
+            elif before_min is not None and after_min is not None and after_min < before_min:
+                updated += 1
+            else:
+                unchanged += 1
+        except Exception:
+            unchanged += 1
+
+    return {"attempted": attempted, "updated": updated, "unchanged": unchanged}
+
+
 def _prepare_factor_data(stock_data: Dict[str, pd.DataFrame], factor_names: List[str]) -> Dict[str, pd.DataFrame]:
     """
     准备因子数据
@@ -483,42 +655,178 @@ def _prepare_factor_data(stock_data: Dict[str, pd.DataFrame], factor_names: List
         因子数据字典
     """
     factor_data = {}
+    ff = FundamentalFactors()
+    cached_rows = []
 
-    for symbol, df in stock_data.items():
-        # 这里简化处理，实际应该从 FactorData 或 FinancialDataManager 获取
-        # 当前模拟生成因子数据
-        np.random.seed(hash(symbol) % 2**32)
+    try:
+        # 技术/情绪类因子可以直接从行情计算，其他因子优先走数据库缓存表（factor_values）。
+        price_driven_factors = {
+            'momentum_20', 'momentum_60', 'volatility_20',
+            'price_volume_trend', 'relative_strength', 'volume_ratio'
+        }
+        db_factor_names = [f for f in factor_names if f not in price_driven_factors and f != 'turnover_rate']
 
-        factor_df = pd.DataFrame(index=df.index)
-        factor_df['date'] = df['date'] if 'date' in df.columns else df.index
-        factor_df['symbol'] = symbol
+        for symbol, df in stock_data.items():
+            factor_df = pd.DataFrame(index=df.index)
+            factor_df['date'] = df['date'] if 'date' in df.columns else df.index
+            factor_df['symbol'] = symbol
 
-        for factor in factor_names:
-            if factor == 'roe':
-                factor_df['roe'] = np.random.uniform(0.05, 0.25, len(df))
-            elif factor == 'pe':
-                factor_df['pe'] = np.random.uniform(5, 30, len(df))
-            elif factor == 'pb':
-                factor_df['pb'] = np.random.uniform(0.5, 5, len(df))
-            elif factor == 'momentum_20':
-                # 计算20日动量
-                if 'close' in df.columns:
-                    returns = df['close'].pct_change()
-                    factor_df['momentum_20'] = returns.rolling(20).sum()
-                else:
-                    factor_df['momentum_20'] = np.random.uniform(-0.1, 0.1, len(df))
-            elif factor == 'revenue_growth':
-                factor_df['revenue_growth'] = np.random.uniform(-0.2, 0.5, len(df))
-            elif factor == 'debt_ratio':
-                factor_df['debt_ratio'] = np.random.uniform(0.2, 0.8, len(df))
-            elif factor == 'turnover_rate':
-                factor_df['turnover_rate'] = np.random.uniform(0.5, 10, len(df))
-            elif factor == 'volume_ratio':
-                factor_df['volume_ratio'] = np.random.uniform(0.5, 3, len(df))
-            else:
-                factor_df[factor] = np.random.randn(len(df))
+            # 统一日期格式，避免查询时出现 Timestamp / str 混用
+            date_series = pd.to_datetime(factor_df['date']).dt.strftime('%Y-%m-%d')
+            start_date = date_series.iloc[0] if len(date_series) > 0 else None
+            end_date = date_series.iloc[-1] if len(date_series) > 0 else None
 
-        factor_data[symbol] = factor_df
+            # 先计算技术与情绪因子（基于价格成交量）
+            if 'close' in df.columns:
+                close = pd.to_numeric(df['close'], errors='coerce')
+                returns = close.pct_change()
+                factor_df['momentum_20'] = returns.rolling(20).sum()
+                factor_df['momentum_60'] = returns.rolling(60).sum()
+                factor_df['volatility_20'] = returns.rolling(20).std()
+                factor_df['price_volume_trend'] = (returns.fillna(0) * pd.to_numeric(df.get('volume', 0), errors='coerce').fillna(0)).cumsum()
+                # 相对强弱：用20日收益近似（无基准指数时的保守替代）
+                factor_df['relative_strength'] = close / close.shift(20) - 1
+
+            if 'volume' in df.columns:
+                vol = pd.to_numeric(df['volume'], errors='coerce')
+                factor_df['volume_ratio'] = vol / vol.rolling(20).mean()
+
+            # 批量加载数据库缓存的因子值（避免逐日逐股计算）
+            if db_factor_names and start_date and end_date:
+                conn = sqlite3.connect(ff.fdm.db_path)
+                try:
+                    placeholders = ",".join(["?" for _ in db_factor_names])
+                    query = f"""
+                        SELECT trade_date, factor_name, factor_value
+                        FROM factor_values
+                        WHERE symbol = ?
+                          AND trade_date BETWEEN ? AND ?
+                          AND factor_name IN ({placeholders})
+                        ORDER BY trade_date
+                    """
+                    params = [symbol, start_date, end_date] + db_factor_names
+                    cached_df = pd.read_sql_query(query, conn, params=params)
+                except Exception:
+                    cached_df = pd.DataFrame()
+                finally:
+                    conn.close()
+
+                if not cached_df.empty:
+                    cached_df['trade_date'] = pd.to_datetime(cached_df['trade_date']).dt.strftime('%Y-%m-%d')
+                    pivot_df = cached_df.pivot_table(
+                        index='trade_date',
+                        columns='factor_name',
+                        values='factor_value',
+                        aggfunc='last'
+                    )
+                    trade_date_map = date_series.to_dict()
+
+                    for factor in db_factor_names:
+                        source_factor = factor
+                        if factor == 'eps' and source_factor not in pivot_df.columns and 'eps_ttm' in pivot_df.columns:
+                            source_factor = 'eps_ttm'
+                        if source_factor in pivot_df.columns:
+                            series_map = pivot_df[source_factor].to_dict()
+                            factor_df[factor] = pd.Series(trade_date_map).map(series_map).values
+
+            # 换手率：优先批量从估值表读取 float_shares，按交易日向前匹配
+            if 'turnover_rate' in factor_names and 'volume' in df.columns and start_date and end_date:
+                conn = sqlite3.connect(ff.fdm.db_path)
+                try:
+                    valuation_df = pd.read_sql_query(
+                        """
+                        SELECT trade_date, float_shares
+                        FROM valuation_data
+                        WHERE symbol = ?
+                          AND trade_date BETWEEN ? AND ?
+                        ORDER BY trade_date
+                        """,
+                        conn,
+                        params=(symbol, start_date, end_date)
+                    )
+                except Exception:
+                    valuation_df = pd.DataFrame()
+                finally:
+                    conn.close()
+
+                if not valuation_df.empty:
+                    trade_dates_df = pd.DataFrame({
+                        'trade_date': pd.to_datetime(date_series)
+                    }).sort_values('trade_date')
+                    valuation_df['trade_date'] = pd.to_datetime(valuation_df['trade_date'])
+                    valuation_df['float_shares'] = pd.to_numeric(valuation_df['float_shares'], errors='coerce')
+                    valuation_df = valuation_df.dropna(subset=['float_shares']).sort_values('trade_date')
+
+                    if not valuation_df.empty:
+                        merged_df = pd.merge_asof(
+                            trade_dates_df,
+                            valuation_df[['trade_date', 'float_shares']],
+                            on='trade_date',
+                            direction='backward'
+                        )
+                        volume_series = pd.to_numeric(df.get('volume', np.nan), errors='coerce')
+                        factor_df['turnover_rate'] = np.where(
+                            merged_df['float_shares'].fillna(0) > 0,
+                            (volume_series.values / merged_df['float_shares'].values) * 100,
+                            np.nan
+                        )
+
+            # 对数据库没有命中的因子做兜底按日计算（保持结果兼容）
+            fallback_factors = [
+                f for f in factor_names
+                if f not in factor_df.columns or factor_df[f].isna().all()
+            ]
+            if fallback_factors:
+                for idx, trade_date in enumerate(date_series):
+                    try:
+                        day_factors = ff.calculate_all_factors(symbol, trade_date)
+                    except Exception:
+                        day_factors = {}
+
+                    for factor in fallback_factors:
+                        current_val = factor_df.at[factor_df.index[idx], factor] if factor in factor_df.columns else np.nan
+                        if pd.notna(current_val):
+                            continue
+                        if factor in day_factors:
+                            value = day_factors.get(factor, np.nan)
+                            factor_df.at[factor_df.index[idx], factor] = value
+                            if pd.notna(value):
+                                cached_rows.append((symbol, trade_date, factor, float(value)))
+                        elif factor == 'eps' and 'eps_ttm' in day_factors:
+                            value = day_factors.get('eps_ttm', np.nan)
+                            factor_df.at[factor_df.index[idx], factor] = value
+                            if pd.notna(value):
+                                cached_rows.append((symbol, trade_date, factor, float(value)))
+
+            # 对估值与财务因子做前向填充，保证季度/日频数据对齐到交易日
+            for factor in factor_names:
+                if factor in factor_df.columns:
+                    factor_df[factor] = pd.to_numeric(factor_df[factor], errors='coerce').ffill()
+
+            # 仅保留所需因子列 + 基础列
+            keep_cols = ['date', 'symbol'] + [f for f in factor_names if f in factor_df.columns]
+            factor_data[symbol] = factor_df[keep_cols].copy()
+
+        # 将兜底现算结果回写缓存，加速后续回测
+        if cached_rows:
+            conn = sqlite3.connect(ff.fdm.db_path)
+            try:
+                cursor = conn.cursor()
+                cursor.executemany(
+                    """
+                    INSERT OR REPLACE INTO factor_values
+                    (symbol, trade_date, factor_name, factor_value, update_time)
+                    VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    """,
+                    cached_rows
+                )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+            finally:
+                conn.close()
+    finally:
+        ff.close()
 
     return factor_data
 
@@ -562,6 +870,7 @@ def _render_results(results: Dict[str, Any]):
 
 def _render_returns_overview(results: Dict[str, Any]):
     """渲染收益概览"""
+    _render_subsection_title("收益概览", "📈", "查看核心收益风险指标与权益曲线")
 
     # 收益指标卡片
     col1, col2, col3, col4, col5 = st.columns(5)
@@ -577,6 +886,36 @@ def _render_returns_overview(results: Dict[str, Any]):
     for col, (label, value, icon) in zip([col1, col2, col3, col4, col5], metrics):
         with col:
             st.metric(label, value, delta=icon)
+
+    # 首笔交易诊断：解释“回测开始后长期空仓”
+    backtest_dates = results.get('dates', {}) or {}
+    backtest_start = str(backtest_dates.get('start', ''))[:10]
+    first_buy_date = results.get('first_buy_date')
+    pre_buy_debug = results.get('pre_first_buy_diagnostics', []) or []
+    if first_buy_date and backtest_start and first_buy_date > backtest_start:
+        st.info(f"首笔买入发生在 `{first_buy_date}`，晚于回测起始 `{backtest_start}`。可在下方查看首笔买入前调仓诊断。")
+    elif not first_buy_date and pre_buy_debug:
+        st.warning("本次回测未发生买入，已记录调仓诊断，可展开查看。")
+
+    if pre_buy_debug:
+        with st.expander("🔍 首笔买入前空仓诊断", expanded=False):
+            debug_df = pd.DataFrame(pre_buy_debug)
+            preferred_cols = [
+                "date",
+                "reason",
+                "candidate_count",
+                "allocation_count",
+                "price_available_count",
+                "executed_buy_count",
+                "skip_non_positive_weight",
+                "skip_missing_price",
+                "skip_target_already_reached",
+                "skip_lot_too_small",
+                "cash",
+                "positions_count",
+            ]
+            show_cols = [c for c in preferred_cols if c in debug_df.columns]
+            st.dataframe(debug_df[show_cols] if show_cols else debug_df, use_container_width=True, hide_index=True)
 
     # 权益曲线
     st.markdown("### 权益曲线")
@@ -637,6 +976,7 @@ def _render_returns_overview(results: Dict[str, Any]):
 
 def _render_factor_analysis(results: Dict[str, Any]):
     """渲染因子分析"""
+    _render_subsection_title("因子分析", "🧪", "追踪权重变化、有效性和收益归因")
 
     factor_report = results.get('factor_report', {})
 
@@ -748,6 +1088,7 @@ def _render_factor_analysis(results: Dict[str, Any]):
 
 def _render_trade_details(results: Dict[str, Any]):
     """渲染交易明细（含因子信息）"""
+    _render_subsection_title("交易明细", "📋", "支持筛选交易记录并查看因子得分")
 
     trade_details = results.get('trade_details')
 
@@ -794,9 +1135,9 @@ def _render_trade_details(results: Dict[str, Any]):
             return ''
 
         # 构建显示列顺序
-        base_cols = ['交易ID', '股票', '买入日期', '买入价格（元）', '买入数量', '买入金额（元）',
+        base_cols = ['股票', '买入日期', '买入价格（元）', '买入数量', '买入金额（元）',
                      '卖出日期', '卖出价格（元）', '收益率（%）', '净收益率（%）', '收益金额（元）',
-                     '持有天数', '状态']
+                     '持有天数', '状态', '卖出原因']
         factor_cols = []
         if show_factors and factor_names:
             for f in factor_names:
@@ -810,9 +1151,13 @@ def _render_trade_details(results: Dict[str, Any]):
         display_cols = [c for c in base_cols + factor_cols if c in filtered.columns]
 
         # 使用实际列名渲染
-        styled = filtered[display_cols].style.applymap(
+        display_df = filtered[display_cols]
+        float_cols = display_df.select_dtypes(include=["float", "floating"]).columns.tolist()
+        styled = display_df.style.applymap(
             color_return, subset=['收益率（%）', '收益金额（元）']
         )
+        if float_cols:
+            styled = styled.format("{:.2f}", subset=float_cols)
         st.dataframe(styled, use_container_width=True)
 
         # ===== 展开详情：雷达图 =====
@@ -841,7 +1186,7 @@ def _render_trade_details(results: Dict[str, Any]):
         with col4:
             if '持有天数' in filtered.columns:
                 avg_days = filtered['持有天数'].mean()
-                st.metric("平均持有天数", f"{avg_days:.1f}")
+                st.metric("平均持有天数", str(int(round(avg_days))))
     else:
         st.info("无交易明细数据")
 
@@ -894,6 +1239,7 @@ def _render_trade_radar(row: pd.Series, factor_names: List[str]):
 
 def _render_rebalance_history(results: Dict[str, Any]):
     """渲染调仓记录"""
+    _render_subsection_title("调仓记录", "🔄", "按调仓日复盘买卖逻辑与候选池变化")
 
     snapshots = results.get('rebalance_snapshots', [])
     factor_names = results.get('factor_names', [])
@@ -1006,8 +1352,7 @@ def _render_rebalance_history(results: Dict[str, Any]):
 
 def _render_config_management(results: Dict[str, Any]):
     """渲染配置管理"""
-
-    st.markdown("### 💾 配置管理")
+    _render_subsection_title("配置管理", "💾", "保存策略参数并管理回测输出")
 
     config = st.session_state.get('mfbt_config', {})
 

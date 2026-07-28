@@ -20,6 +20,7 @@ try:
     from data import DataManager
 except ImportError:
     from quant_system.data import DataManager
+from config import DATABASE_PATH
 
 
 class ICAnalyzer:
@@ -43,7 +44,7 @@ class ICAnalyzer:
         Args:
             db_path: 数据库路径
         """
-        self.db_path = db_path or 'C:/Users/FY/WorkBuddy/Claw/quant_data.db'
+        self.db_path = db_path or str(DATABASE_PATH)
         self.dm = DataManager(db_path=self.db_path)
 
     def calculate_ic(
