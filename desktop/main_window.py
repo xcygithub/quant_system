@@ -28,6 +28,7 @@ from desktop.pages.factor_analysis_page import FactorAnalysisPage
 from desktop.pages.factor_backtest_page import FactorBacktestPage
 from desktop.pages.signal_scan_page import SignalScanPage
 from desktop.pages.performance_page import PerformancePage
+from desktop.pages.widget_gallery_page import WidgetGalleryPage
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +41,7 @@ NAV_ITEMS = [
     ("多因子回测", FactorBacktestPage),
     ("信号扫描", SignalScanPage),
     ("绩效分析", PerformancePage),
+    ("组件展示", WidgetGalleryPage),  # 阶段2开发调试
 ]
 
 
