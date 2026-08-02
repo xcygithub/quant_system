@@ -1,18 +1,19 @@
 """
-ChartContainer 图表容器 — 替代 st.plotly_chart（10处）
+ChartContainer 图表容器 — 阶段4：pyqtgraph 原生 + WebEngine 兼容双轨
 
-过渡期方案：用 QWebEngineView 嵌入 plotly Figure。
-阶段4再用 pyqtgraph 原生重写。
+阶段3 时用 QWebEngineView 嵌 plotly 过渡；阶段4 改为以 pyqtgraph 原生为主路径。
+所有页面优先用 `set_plot_widget(pg_widget)` 渲染原生图表；
+尚未迁移的页面可继续用 `set_figure(plotly_fig)` 走 WebEngine 兼容路径。
 
-设计依据：web 屄 st.plotly_chart 全部传入 plotly Figure 对象，
-全部用 use_container_width=True（Qt 布局天然自适应，无需该参数）。
-图表类型：Scatter权益曲线、K线图、Heatmap热力图、Scatterpolar雷达图。
-
-注意：QtWebEngine 是可选依赖，未安装时降级为占位提示。
+内部维护单一「内容槽」QWidget，三种渲染路径互斥切换：
+- set_plot_widget(pg.PlotWidget / pg.GraphicsLayoutWidget) — 原生（推荐）
+- set_figure(plotly Figure)                                 — WebEngine（兼容）
+- set_message(text)                                         — 占位提示
 """
 import logging
 from typing import Optional
-from PySide6.QtWidgets import QFrame, QVBoxLayout, QLabel
+
+from PySide6.QtWidgets import QFrame, QVBoxLayout, QLabel, QWidget
 from PySide6.QtCore import Qt
 
 logger = logging.getLogger(__name__)
@@ -21,28 +22,22 @@ logger = logging.getLogger(__name__)
 class ChartContainer(QFrame):
     """图表容器
 
-    过渡期：用 QWebEngineView 渲染 plotly Figure。
+    Usage（推荐，阶段4）::
+        container = ChartContainer(title="权益曲线")
+        from desktop.charts.equity_chart import build_equity_plot
+        container.set_plot_widget(build_equity_plot(equity_df))
 
-    Usage:
-        container = ChartContainer(title="多因子组合权益曲线")
+    Usage（兼容，未迁移页面）::
         container.set_figure(plotly_fig)
-
-        # 无标题
-        container = ChartContainer()
-        container.set_figure(fig)
-
-    Note:
-        需要 PySide6-WebEngine 包。未安装时显示降级占位。
-        安装: pip install PySide6-WebEngine
     """
 
     def __init__(self, title: str = "", parent=None):
         super().__init__(parent)
         self.setObjectName("chartContainer")
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
 
         if title:
             title_label = QLabel(title)
@@ -51,10 +46,22 @@ class ChartContainer(QFrame):
                 "padding: 8px 12px; background-color: #f9fafb; "
                 "border-bottom: 1px solid #e5e7eb;"
             )
-            layout.addWidget(title_label)
+            outer.addWidget(title_label)
 
+        # 内容槽：装 pyqtgraph widget / WebEngine view / 占位 QLabel
+        self._content_slot = QWidget()
+        self._content_slot.setObjectName("chartContentSlot")
+        self._content_layout = QVBoxLayout(self._content_slot)
+        self._content_layout.setContentsMargins(0, 0, 0, 0)
+        self._content_layout.setSpacing(0)
+        outer.addWidget(self._content_slot, 1)
+
+        # 当前内容引用 + 类型标记
+        self._content_widget: Optional[QWidget] = None
+        self._content_kind: str = ""    # "pyqtgraph" / "webengine" / "message" / ""
+
+        # WebEngine view 懒加载（仅 set_figure 路径用）
         self._web_view = None
-        self._init_web_view(layout)
 
         self.setStyleSheet("""
             QFrame#chartContainer {
@@ -62,104 +69,144 @@ class ChartContainer(QFrame):
                 border-radius: 8px;
                 background-color: #ffffff;
             }
+            QWidget#chartContentSlot {
+                background-color: #ffffff;
+            }
         """)
         self.setMinimumHeight(300)
 
-    def _init_web_view(self, layout):
-        """初始化 WebEngineView（含降级处理）"""
-        try:
-            from PySide6.QtWebEngineWidgets import QWebEngineView
-            self._web_view = QWebEngineView()
-            layout.addWidget(self._web_view, 1)
-        except ImportError:
-            placeholder = QLabel(
-                "⚠️ QtWebEngine 未安装，无法渲染图表\n\n"
-                "安装命令:\npip install PySide6-WebEngine"
-            )
-            placeholder.setStyleSheet(
-                "color: #6b7280; padding: 40px; background-color: #f9fafb;"
-            )
-            placeholder.setAlignment(Qt.AlignCenter)
-            layout.addWidget(placeholder, 1)
-            logger.warning("QtWebEngine 未安装，ChartContainer 降级为占位")
+    # ========== 内部：替换内容槽中的 widget ==========
+    def _replace_content(self, widget: Optional[QWidget], kind: str):
+        """清掉旧内容，装新 widget（widget 为 None 表示只清空）"""
+        # 1) 拆掉旧的
+        if self._content_widget is not None:
+            self._content_layout.takeAt(0)
+            try:
+                self._content_widget.setParent(None)
+                self._content_widget.deleteLater()
+            except RuntimeError:
+                pass    # C++ 对象已销毁
 
-    def set_figure(self, figure):
-        """渲染 plotly Figure
+        self._content_widget = widget
+        self._content_kind = kind
 
-        Args:
-            figure: plotly Figure 对象（go.Figure 或 make_subplots 结果）
+        # 2) 装新的
+        if widget is not None:
+            self._content_layout.addWidget(widget, 1)
+
+    # ========== 主路径：pyqtgraph 原生 ==========
+    def set_plot_widget(self, plot_widget: QWidget):
+        """渲染 pyqtgraph 原生 widget（PlotWidget / GraphicsLayoutWidget）
+
+        阶段4 主路径，调用方从 desktop/charts/*_chart.py 取构建好的 widget 传入。
         """
-        if self._web_view is None:
-            logger.error("QtWebEngine 未安装，无法渲染图表")
+        if plot_widget is None:
+            self.set_message("图表渲染失败：widget 为空", level="error")
+            return
+        # 释放旧的 WebEngine（如果之前用过）
+        self._release_web_view()
+        self._replace_content(plot_widget, "pyqtgraph")
+
+    # ========== 兼容路径：plotly Figure via WebEngine ==========
+    def set_figure(self, figure):
+        """渲染 plotly Figure（兼容路径，未迁移页面继续用）
+
+        内部懒加载 QWebEngineView。未安装 PySide6-WebEngine 时降级为占位。
+        """
+        view = self._ensure_web_view()
+        if view is None:
+            self.set_message(
+                "⚠️ QtWebEngine 未安装，无法渲染 plotly 图表\n"
+                "安装: pip install PySide6-WebEngine",
+                level="warning",
+            )
             return
 
         try:
             html = figure.to_html(
                 include_plotlyjs='cdn',
                 full_html=False,
-                config={
-                    'displayModeBar': True,
-                    'responsive': True,
-                }
+                config={'displayModeBar': True, 'responsive': True},
             )
-            self._web_view.setHtml(html)
+            view.setHtml(html)
         except Exception as e:
             logger.exception("渲染图表失败")
-            self._web_view.setHtml(
-                f"<p style='color:#dc2626;padding:20px;'>渲染失败: {e}</p>"
-            )
+            self.set_message(f"渲染失败: {e}", level="error")
 
     def set_html(self, html: str):
-        """直接设置 HTML 内容（高级用法）"""
-        if self._web_view:
-            self._web_view.setHtml(html)
+        """直接设置 HTML 内容（高级用法，仅 WebEngine 路径）"""
+        view = self._ensure_web_view()
+        if view is not None:
+            view.setHtml(html)
 
+    def _ensure_web_view(self):
+        """懒加载 QWebEngineView；已切换到 pyqtgraph 时需重新装回"""
+        if self._web_view is not None:
+            # 之前用过，确保它还在内容槽里
+            if self._content_kind != "webengine":
+                self._replace_content(self._web_view, "webengine")
+            return self._web_view
+
+        try:
+            from PySide6.QtWebEngineWidgets import QWebEngineView
+        except ImportError:
+            logger.warning("QtWebEngine 未安装，ChartContainer 无法渲染 plotly")
+            return None
+
+        self._web_view = QWebEngineView()
+        self._replace_content(self._web_view, "webengine")
+        return self._web_view
+
+    def _release_web_view(self):
+        """彻底释放 WebEngine view（迁移到 pyqtgraph 后释放内存）"""
+        if self._web_view is not None:
+            try:
+                self._web_view.deleteLater()
+            except RuntimeError:
+                pass
+            self._web_view = None
+
+    # ========== 占位提示 ==========
     def set_message(self, text: str, level: str = "info"):
         """显示占位提示（替代 st.info / st.warning 出现在图表位置的场景）
-
-        用于「暂无数据 / 正在加载 / 渲染失败」等空状态，避免留下一块空白画布。
 
         Args:
             text: 提示文本
             level: info（灰）/ warning（橙）/ error（红）
         """
+        # 切到 pyqtgraph 路径后，message 用 QLabel 占位；不再走 WebEngine
+        self._release_web_view()
+
         colors = {
             "info": "#6b7280",
             "warning": "#d97706",
             "error": "#dc2626",
         }
         color = colors.get(level, colors["info"])
-        safe_text = (
-            str(text)
-            .replace("&", "&amp;")
-            .replace("<", "&lt;")
-            .replace(">", "&gt;")
-            .replace("\n", "<br/>")
+        label = QLabel(str(text))
+        label.setAlignment(Qt.AlignCenter)
+        label.setStyleSheet(
+            f"color: {color}; padding: 40px; background-color: #f9fafb; "
+            "font-size: 14px;"
         )
-        html = (
-            "<div style=\"display:flex;align-items:center;justify-content:center;"
-            "height:100%;min-height:220px;margin:0;font-family:"
-            "'Microsoft YaHei','PingFang SC',sans-serif;background:#ffffff;\">"
-            f"<span style=\"color:{color};font-size:14px;text-align:center;\">"
-            f"{safe_text}</span></div>"
-        )
-        if self._web_view:
-            self._web_view.setHtml(html)
-        else:
-            logger.info("ChartContainer 占位提示（无 WebEngine）: %s", text)
+        label.setWordWrap(True)
+        self._replace_content(label, "message")
 
+    # ========== 清空 ==========
     def clear(self):
         """清除图表"""
-        if self._web_view:
-            self._web_view.setHtml("")
+        self._release_web_view()
+        self._replace_content(None, "")
+
+    # ========== 诊断 ==========
+    @property
+    def content_kind(self) -> str:
+        """当前内容类型：'pyqtgraph' / 'webengine' / 'message' / ''"""
+        return self._content_kind
 
 
 def check_webengine_available() -> bool:
-    """检查 QtWebEngine 是否可用
-
-    Returns:
-        True 表示可用
-    """
+    """检查 QtWebEngine 是否可用（兼容旧代码）"""
     try:
         from PySide6.QtWebEngineWidgets import QWebEngineView  # noqa: F401
         return True

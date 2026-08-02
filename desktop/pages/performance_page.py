@@ -7,13 +7,11 @@ multi_backtest_results 的接口从未接线。桌面版将其升级为真实的
 - 读取 AppState.multi_backtest_results（由策略回测/多因子回测页运行后写入）
 - 展示核心收益指标卡（总收益率/年化/夏普/最大回撤）
 - 展示交易统计（总交易/买入/卖出）
-- 渲染权益曲线（ChartContainer 封装 plotly，过渡期方案）
+- 渲染权益曲线（阶段4：desktop/charts/equity_chart.pyqtgraph 原生）
 - 展示回测过程中的 warnings
 
 无 st.session_state / st.rerun，状态通过 AppState 信号驱动局部刷新。
 """
-import plotly.graph_objects as go
-
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout,
                                  QLabel, QFrame, QScrollArea)
 from PySide6.QtCore import Qt
@@ -128,22 +126,12 @@ class PerformancePage(BasePage):
             self._chart.set_message("无权益曲线数据")
             return
         try:
-            fig = go.Figure()
-            fig.add_trace(go.Scatter(
-                x=list(equity_curve["date"]),
-                y=list(equity_curve["total_value"]),
-                mode="lines",
-                name="权益曲线",
-                line=dict(color="#1d4ed8", width=2),
-            ))
-            fig.update_layout(
-                margin=dict(l=50, r=20, t=30, b=40),
-                height=320,
-                xaxis_title="日期",
-                yaxis_title="总资产（元）",
-                hovermode="x unified",
+            from desktop.charts.equity_chart import build_equity_widget
+            self._chart.set_plot_widget(
+                build_equity_widget(
+                    equity_curve, title="权益曲线", height=320,
+                )
             )
-            self._chart.set_figure(fig)
         except Exception as e:
             self._chart.set_message(f"权益曲线渲染失败: {e}")
 

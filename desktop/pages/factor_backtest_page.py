@@ -400,64 +400,10 @@ def _run_backtest(config, db_path, progress_callback=None):
 
 
 # ============ 图表辅助 ============
+# 阶段4：原 plotly 版本 _make_equity_figure / _make_exposure_figure /
+# _make_attribution_figure / _make_trade_radar_figure 已迁移到 desktop/charts/
+# —— equity_chart / exposure_chart / attribution_chart / radar_chart
 
-def _make_equity_figure(equity_df):
-    import plotly.graph_objects as go
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(
-        x=list(equity_df["date"]), y=list(equity_df["total_value"]),
-        mode="lines", name="组合权益", line=dict(color="#1f77b4", width=2)))
-    if "benchmark" in equity_df.columns:
-        fig.add_trace(go.Scatter(
-            x=list(equity_df["date"]), y=list(equity_df["benchmark"]),
-            mode="lines", name="基准", line=dict(color="#888888", width=1, dash="dash")))
-    fig.update_layout(height=400, xaxis_title="日期", yaxis_title="权益",
-                      showlegend=True, legend=dict(orientation="h", yanchor="bottom", y=1.02))
-    return fig
-
-
-def _make_exposure_figure(exposure_df):
-    import plotly.graph_objects as go
-    fig = go.Figure()
-    for col in exposure_df.columns:
-        fig.add_trace(go.Scatter(
-            x=list(exposure_df.index), y=list(exposure_df[col]), mode="lines", name=col,
-            stackgroup="one" if len(exposure_df.columns) <= 3 else None))
-    fig.update_layout(height=400, xaxis_title="日期", yaxis_title="暴露度")
-    return fig
-
-
-def _make_attribution_figure(attribution):
-    import plotly.graph_objects as go
-    from plotly.subplots import make_subplots
-    factors = list(attribution.keys())
-    contributions = [attribution[f].get("contribution", 0) for f in factors]
-    returns = [attribution[f].get("factor_return", 0) for f in factors]
-    fig = make_subplots(rows=1, cols=2, subplot_titles=("收益贡献", "因子收益率"))
-    colors = ["#dc3545" if c > 0 else "#28a745" for c in contributions]
-    fig.add_trace(go.Bar(x=factors, y=contributions, marker_color=colors, name="贡献"), row=1, col=1)
-    colors2 = ["#dc3545" if r > 0 else "#28a745" for r in returns]
-    fig.add_trace(go.Bar(x=factors, y=returns, marker_color=colors2, name="收益率"), row=1, col=2)
-    fig.update_layout(height=350, showlegend=False)
-    return fig
-
-
-def _make_trade_radar_figure(row, factor_names):
-    import plotly.graph_objects as go
-    theta, r = [], []
-    for f in factor_names:
-        col = f"{f}_得分"
-        if col in row and pd.notna(row[col]):
-            theta.append(f)
-            r.append(float(row[col]))
-    if len(theta) < 3:
-        return None
-    fig = go.Figure(data=go.Scatterpolar(
-        r=r + [r[0]], theta=theta + [theta[0]], fill="toself", name="该股票"))
-    fig.update_layout(
-        polar=dict(radialaxis=dict(visible=True, range=[0, 100])), showlegend=False,
-        height=400, title=f"交易 {row.get('股票', '')} 因子得分雷达图")
-    return fig
 
 
 class FactorBacktestPage(BasePage):
@@ -891,7 +837,8 @@ class FactorBacktestPage(BasePage):
         chart.setMinimumHeight(360)
         equity = results.get("equity_curve")
         if equity is not None and not equity.empty:
-            chart.set_figure(_make_equity_figure(equity))
+            from desktop.charts.equity_chart import build_equity_widget
+            chart.set_plot_widget(build_equity_widget(equity, height=360))
         else:
             chart.set_message("无权益曲线数据")
         layout.addWidget(chart)
@@ -951,7 +898,8 @@ class FactorBacktestPage(BasePage):
             layout.addWidget(QLabel("因子暴露度时序"))
             ec = ChartContainer(title="因子暴露度")
             ec.setMinimumHeight(360)
-            ec.set_figure(_make_exposure_figure(exposure))
+            from desktop.charts.exposure_chart import build_exposure_widget
+            ec.set_plot_widget(build_exposure_widget(exposure))
             layout.addWidget(ec)
 
         attribution = report.get("attribution", {}) or {}
@@ -959,7 +907,8 @@ class FactorBacktestPage(BasePage):
             layout.addWidget(QLabel("因子收益归因"))
             ac = ChartContainer(title="因子收益归因")
             ac.setMinimumHeight(320)
-            ac.set_figure(_make_attribution_figure(attribution))
+            from desktop.charts.attribution_chart import build_attribution_widget
+            ac.set_plot_widget(build_attribution_widget(attribution))
             layout.addWidget(ac)
 
     def _render_trade_details(self, results):
@@ -1084,13 +1033,20 @@ class FactorBacktestPage(BasePage):
         self._clear_layout(self._trade_radar_container.layout())
         container = QWidget()
         cl = QVBoxLayout(container)
-        fig = _make_trade_radar_figure(row, factor_names)
-        if fig is None:
+        # 收集有效因子
+        theta, r = [], []
+        for f in factor_names:
+            col = f"{f}_得分"
+            if col in row and pd.notna(row[col]):
+                theta.append(f)
+                r.append(float(row[col]))
+        if len(theta) < 3:
             cl.addWidget(QLabel("因子数据不足，无法绘制雷达图"))
         else:
+            from desktop.charts.radar_chart import build_radar_widget
             chart = ChartContainer(title="因子得分雷达图")
             chart.setMinimumHeight(360)
-            chart.set_figure(fig)
+            chart.set_plot_widget(build_radar_widget(theta, r, value_max=100))
             cl.addWidget(chart)
         self._trade_radar_container.layout().addWidget(container)
 
@@ -1172,16 +1128,32 @@ class FactorBacktestPage(BasePage):
 
             score_cols = [f"{f}_得分" for f in factor_names if f"{f}_得分" in pdf.columns]
             if score_cols:
-                import plotly.graph_objects as go
+                from desktop.charts.heatmap_chart import build_heatmap_widget
+                from PySide6.QtGui import QColor
                 heat = pdf[["股票"] + score_cols].set_index("股票")
-                fig = go.Figure(data=go.Heatmap(
-                    z=heat.values, x=list(heat.columns), y=list(heat.index),
-                    colorscale="RdYlGn", zmin=0, zmax=100,
-                    text=heat.values, texttemplate="%{text:.0f}", textfont={"size": 10}))
-                fig.update_layout(height=max(300, len(heat) * 25 + 100))
+                text_arr = heat.values.astype(str)
+                # 把每格数值格式化成整数
+                import numpy as _np
+                text_arr = _np.where(_np.isfinite(heat.values),
+                                     _np.round(heat.values).astype(int).astype(str),
+                                     "")
                 hc = ChartContainer(title="因子得分热力图")
                 hc.setMinimumHeight(max(300, len(heat) * 25 + 100))
-                hc.set_figure(fig)
+                hc.set_plot_widget(build_heatmap_widget(
+                    heat.values,
+                    list(heat.columns),
+                    list(heat.index),
+                    color_stops=[
+                        (0.0, QColor("#dc2626")),    # 低分：红
+                        (0.5, QColor("#fbbf24")),    # 中分：黄
+                        (1.0, QColor("#16a34a")),    # 高分：绿
+                    ],
+                    zmin=0, zmax=100,
+                    text=text_arr,
+                    title="因子得分",
+                    height=max(300, len(heat) * 25 + 100),
+                    x_label="因子", y_label="股票",
+                ))
                 bl.addWidget(hc)
 
     def _render_config_management(self, results):

@@ -298,6 +298,38 @@ class TestChartContainer:
 
     def test_pages_calling_set_message_are_covered(self, qapp):
         """静态校验：页面里调用的 ChartContainer 方法都真实存在"""
-        used = {'set_figure', 'set_html', 'set_message', 'clear'}
+        used = {'set_figure', 'set_html', 'set_message', 'set_plot_widget', 'clear'}
         missing = [m for m in used if not hasattr(ChartContainer, m)]
         assert not missing, f'ChartContainer 缺少方法: {missing}'
+
+    def test_set_plot_widget_replaces_content(self, qapp):
+        """阶段4：set_plot_widget 切到 pyqtgraph 路径"""
+        import pyqtgraph as pg
+        import numpy as np
+        c = ChartContainer()
+        c.set_message('初始占位')
+        assert c.content_kind == 'message'
+        w = pg.PlotWidget()
+        w.plot(np.arange(20), np.random.random(20))
+        c.set_plot_widget(w)
+        assert c.content_kind == 'pyqtgraph'
+
+    def test_set_plot_widget_releases_webengine(self, qapp):
+        """从 WebEngine 路径切到 pyqtgraph 后，_web_view 应被释放"""
+        import pyqtgraph as pg
+        c = ChartContainer()
+
+        class _MockFig:
+            def to_html(self, **kw):
+                return '<p>mock</p>'
+        c.set_figure(_MockFig())    # 走 WebEngine（如可用）
+        # 切到 pyqtgraph
+        c.set_plot_widget(pg.PlotWidget())
+        assert c.content_kind == 'pyqtgraph'
+        assert c._web_view is None, '切到 pyqtgraph 后 _web_view 应释放'
+
+    def test_clear_resets_content_kind(self, qapp):
+        c = ChartContainer()
+        c.set_message('占位')
+        c.clear()
+        assert c.content_kind == ''

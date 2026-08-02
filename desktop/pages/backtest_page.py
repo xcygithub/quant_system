@@ -13,8 +13,7 @@ st.rerun 联动，桌面版改用信号槽驱动局部刷新，无 session_state
 - 结果：核心指标卡 + 权益曲线图 + 信号图（子图/热力图可选） + 交易明细表 + 持仓明细
 - 回测在 AsyncWorker(QThread) 中执行，完成后写入 AppState.multi_backtest_results
 
-长耗时操作在子线程执行；信号图使用独立的 plotly 辅助函数（不依赖已废弃的
-web/charts 模块）。
+阶段4 起图表改用 desktop/charts/ 下的 pyqtgraph 原生实现，不再依赖 plotly。
 """
 import pandas as pd
 
@@ -24,9 +23,6 @@ from PySide6.QtWidgets import (
     QFileDialog,
 )
 from PySide6.QtCore import Qt, QDate
-
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 
 from desktop.pages.base_page import BasePage
 from desktop.widgets.strategy_params_widget import StrategyParamsWidget
@@ -89,64 +85,10 @@ def _do_backtest(run_config: dict, db_path: str, stock_names: dict) -> dict:
     return run_result
 
 
-# ============ 信号图辅助函数（纯 plotly，不依赖 web/charts）============
-def _make_signals_heatmap(signals: dict, symbols: list, dates) -> go.Figure:
-    df = pd.DataFrame({
-        s: sig.reindex(pd.to_datetime(dates)).ffill()
-        for s, sig in signals.items() if s in symbols
-    }).T
-    fig = go.Figure(go.Heatmap(
-        z=df.values,
-        x=[str(d)[:10] for d in df.columns],
-        y=list(df.index),
-        colorscale=[[0, "#16a34a"], [0.5, "#ffffff"], [1, "#dc2626"]],
-        zmid=0,
-        zmin=-1, zmax=1,
-        colorbar=dict(title="信号"),
-    ))
-    fig.update_layout(
-        title="信号热力图（红=买入 绿=卖出）",
-        height=400, xaxis_title="日期", yaxis_title="股票",
-    )
-    return fig
-
-
-def _make_multi_stock_subplots(stock_data: dict, signals: dict, symbols: list) -> go.Figure:
-    n = len(symbols)
-    fig = make_subplots(rows=n, cols=1, shared_xaxes=True, subplot_titles=symbols)
-    for i, s in enumerate(symbols, start=1):
-        df = stock_data.get(s)
-        if df is None or df.empty:
-            continue
-        fig.add_trace(
-            go.Scatter(x=list(df["date"]), y=list(df["close"]),
-                       name=s, mode="lines", line=dict(color="#1f77b4", width=1)),
-            row=i, col=1,
-        )
-        sig = signals.get(s)
-        if sig is not None:
-            closes = df["close"].reset_index(drop=True)
-            sig_vals = sig.reset_index(drop=True)
-            if len(closes) == len(sig_vals):
-                buy_idx = sig_vals[sig_vals == 1].index
-                sell_idx = sig_vals[sig_vals == -1].index
-                if len(buy_idx):
-                    fig.add_trace(go.Scatter(
-                        x=[df["date"].iloc[j] for j in buy_idx],
-                        y=[closes.iloc[j] for j in buy_idx],
-                        mode="markers", name="买入",
-                        marker=dict(color="#dc2626", size=8, symbol="triangle-up"),
-                    ), row=i, col=1)
-                if len(sell_idx):
-                    fig.add_trace(go.Scatter(
-                        x=[df["date"].iloc[j] for j in sell_idx],
-                        y=[closes.iloc[j] for j in sell_idx],
-                        mode="markers", name="卖出",
-                        marker=dict(color="#16a34a", size=8, symbol="triangle-down"),
-                    ), row=i, col=1)
-    fig.update_layout(height=max(300, 180 * n), showlegend=False,
-                      title="各股票信号（▲买入 ▼卖出）")
-    return fig
+# ============ 信号图辅助函数（阶段4：已迁移到 desktop/charts/） ============
+# 原 plotly 版本 _make_signals_heatmap / _make_multi_stock_subplots
+# 已由 desktop.charts.heatmap_chart.build_signal_heatmap_widget
+# 和 desktop.charts.multi_stock_chart.build_multi_stock_widget 替代。
 
 
 class BacktestPage(BasePage):
@@ -526,19 +468,12 @@ class BacktestPage(BasePage):
             self._equity_chart.set_message("无权益曲线数据")
             return
         try:
-            fig = go.Figure()
-            fig.add_trace(go.Scatter(
-                x=list(equity_curve["date"]),
-                y=list(equity_curve["total_value"]),
-                mode="lines", name="组合净值",
-                line=dict(color="#1f77b4", width=2),
-            ))
-            fig.update_layout(
-                margin=dict(l=50, r=20, t=30, b=40),
-                height=300, xaxis_title="日期", yaxis_title="净值（元）",
-                hovermode="x unified",
+            from desktop.charts.equity_chart import build_equity_widget
+            self._equity_chart.set_plot_widget(
+                build_equity_widget(
+                    equity_curve, title="组合净值", height=300,
+                )
             )
-            self._equity_chart.set_figure(fig)
         except Exception as e:
             self._equity_chart.set_message(f"权益曲线渲染失败: {e}")
 
@@ -550,14 +485,21 @@ class BacktestPage(BasePage):
             return
         try:
             if mode == "子图分股票":
-                fig = _make_multi_stock_subplots(
-                    self._stock_data, self._signals, self._symbols
+                from desktop.charts.multi_stock_chart import build_multi_stock_widget
+                self._signals_chart.set_plot_widget(
+                    build_multi_stock_widget(
+                        self._stock_data, self._signals, self._symbols
+                    )
                 )
+                return
             else:  # 热力图
-                fig = _make_signals_heatmap(
-                    self._signals, self._symbols, self._common_dates
+                from desktop.charts.heatmap_chart import build_signal_heatmap_widget
+                self._signals_chart.set_plot_widget(
+                    build_signal_heatmap_widget(
+                        self._signals, self._symbols, self._common_dates
+                    )
                 )
-            self._signals_chart.set_figure(fig)
+                return
         except Exception as e:
             self._signals_chart.set_message(f"信号图渲染失败: {e}")
 

@@ -97,75 +97,8 @@ def _resample_kline(df: pd.DataFrame, period: str) -> pd.DataFrame:
     return agg.reset_index()
 
 
-def _make_kline_figure(df: pd.DataFrame, symbol: str, period: str = "D"):
-    """绘制专业 K 线图（中国配色：红涨绿跌）。"""
-    import plotly.graph_objects as go
-    from plotly.subplots import make_subplots
-
-    df = df.copy()
-    df["color"] = ["rise" if c >= o else "fall" for c, o in zip(df["close"], df["open"])]
-
-    fig = make_subplots(
-        rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.08,
-        row_heights=[0.7, 0.3], subplot_titles=("", "成交量"),
-    )
-    fig.add_trace(go.Candlestick(
-        x=df["date"], open=df["open"], high=df["high"], low=df["low"], close=df["close"],
-        name="K线",
-        increasing_line_color="#FF0000", decreasing_line_color="#00A000",
-        increasing_fillcolor="#FF0000", decreasing_fillcolor="#00A000",
-    ), row=1, col=1)
-
-    if period == "D":
-        ma_periods, ma_labels = [5, 10, 20, 60], ["MA5", "MA10", "MA20", "MA60"]
-    elif period == "W":
-        ma_periods, ma_labels = [5, 10, 20], ["MA5", "MA10", "MA20"]
-    elif period == "M":
-        ma_periods, ma_labels = [3, 6, 12], ["MA3", "MA6", "MA12"]
-    else:
-        ma_periods, ma_labels = [3, 5], ["MA3", "MA5"]
-    ma_color_map = {
-        "MA3": "#6366f1", "MA5": "#2563eb", "MA6": "#0ea5e9", "MA10": "#ef4444",
-        "MA12": "#f59e0b", "MA20": "#10b981", "MA60": "#14b8a6",
-    }
-    for mp, ml in zip(ma_periods, ma_labels):
-        if len(df) >= mp:
-            df[f"ma{mp}"] = df["close"].rolling(mp).mean()
-            fig.add_trace(go.Scatter(
-                x=df["date"], y=df[f"ma{mp}"], name=ml,
-                line=dict(width=1.6, color=ma_color_map.get(ml, "#64748b")),
-            ), row=1, col=1)
-
-    colors = ["#FF0000" if c >= o else "#00A000" for c, o in zip(df["close"], df["open"])]
-    fig.add_trace(go.Bar(
-        x=df["date"], y=df["volume"], marker_color=colors, name="成交量", opacity=0.7,
-    ), row=2, col=1)
-
-    period_names = {"D": "日K", "W": "周K", "M": "月K", "Y": "年K"}
-    fig.update_layout(
-        title=dict(text=f"<b>{symbol}</b> {period_names.get(period, 'K线')}走势", x=0.5, font=dict(size=18)),
-        height=820, showlegend=True, template="plotly_white",
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-        hovermode="x unified", dragmode="pan",
-        xaxis=dict(rangeslider=dict(visible=False), type="category", tickangle=45,
-                   showgrid=True, gridcolor="rgba(148,163,184,0.18)", showspikes=True,
-                   spikemode="across", spikesnap="cursor", spikethickness=1),
-        yaxis=dict(showgrid=True, gridcolor="rgba(148,163,184,0.18)", showspikes=True,
-                   spikethickness=1, tickformat=".2f"),
-        yaxis2=dict(tickformat=".0f", showgrid=True, gridcolor="rgba(148,163,184,0.18)"),
-        plot_bgcolor="#ffffff", paper_bgcolor="white",
-        margin=dict(t=80, l=60, r=40, b=70),
-    )
-    if period == "D":
-        fig.update_xaxes(
-            rangebreaks=[dict(bounds=["sat", "mon"])],
-            rangeselector=dict(buttons=list([
-                dict(count=1, label="1M", step="month", stepmode="backward"),
-                dict(count=3, label="3M", step="month", stepmode="backward"),
-                dict(count=6, label="6M", step="month", stepmode="backward"),
-                dict(count=1, label="1Y", step="year", stepmode="backward"),
-                dict(step="all", label="ALL")])))
-    return fig
+# 阶段4：原 plotly 版 _make_kline_figure 已迁移到
+# desktop/charts/kline_chart.py 的 build_kline_widget（pyqtgraph 原生）
 
 
 class WatchlistPage(BasePage):
@@ -687,8 +620,10 @@ class WatchlistPage(BasePage):
         period = PERIOD_MAP[self._period_combo.currentText()]
         disp = _resample_kline(df, period) if period != "D" else df.copy()
         try:
-            fig = _make_kline_figure(disp, self._detail_symbol, period)
-            self._chart.set_figure(fig)
+            from desktop.charts.kline_chart import build_kline_widget
+            self._chart.set_plot_widget(
+                build_kline_widget(disp, self._detail_symbol, period)
+            )
         except Exception as e:
             self._chart.set_message(f"图表渲染失败: {e}")
 

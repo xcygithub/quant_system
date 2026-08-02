@@ -144,26 +144,23 @@ class WidgetGalleryPage(QWidget):
         layout = QVBoxLayout(frame)
         layout.setSpacing(8)
         layout.addWidget(SectionTitle("📈 ChartContainer 图表容器",
-                                       "替代 st.plotly_chart（10处），QtWebEngine嵌入plotly"))
-        chart = ChartContainer(title="示例：权益曲线")
+                                       "阶段4：pyqtgraph 原生渲染（双轨兼容 plotly）"))
+        chart = ChartContainer(title="示例：权益曲线（pyqtgraph 原生）")
         layout.addWidget(chart)
 
-        if check_webengine_available():
-            try:
-                import plotly.graph_objects as go
-                np.random.seed(42)
-                fig = go.Figure()
-                fig.add_trace(go.Scatter(
-                    x=pd.date_range('2024-01-01', periods=30),
-                    y=np.cumsum(np.random.randn(30)) + 100,
-                    name='权益',
-                    line=dict(color='#1d4ed8', width=2),
-                ))
-                fig.update_layout(title='示例权益曲线', height=350,
-                                  margin=dict(l=40, r=20, t=40, b=30))
-                chart.set_figure(fig)
-            except Exception as e:
-                layout.addWidget(QLabel(f"图表渲染失败: {e}"))
+        try:
+            from desktop.charts.equity_chart import build_equity_widget
+            import numpy as np
+            import pandas as pd
+            np.random.seed(42)
+            n = 60
+            df = pd.DataFrame({
+                "date": pd.date_range('2024-01-01', periods=n, freq='B').strftime('%Y-%m-%d'),
+                "total_value": np.cumprod(1 + np.random.randn(n) * 0.012 + 0.0008) * 1_000_000,
+            })
+            chart.set_plot_widget(build_equity_widget(df, height=350))
+        except Exception as e:
+            layout.addWidget(QLabel(f"图表渲染失败: {e}"))
         return frame
 
     def _build_async_demo(self) -> QFrame:

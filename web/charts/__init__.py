@@ -1,21 +1,7 @@
 """Web 图表绘制层。
 
-集中存放所有 plotly 绘图函数，便于阶段 3 整体替换为 pyqtgraph。
-当前实现基于 plotly，保持与原 app.py 行为一致。
+阶段0 曾在此集中 5 个 plotly 绘图函数（signal_charts.py）。
+阶段3 桌面端迁移时，桌面端直接在 pages 内联了 plotly 辅助函数，未引用此模块；
+阶段4 桌面端改用 pyqtgraph 原生绘图（desktop/charts/），Web 端也停用本模块。
+signal_charts.py 已删除，本 __init__.py 保留为空包标记。
 """
-
-from .signal_charts import (
-    plot_kline,
-    plot_kline_with_signals,
-    plot_signals_only,
-    plot_multi_stock_signals,
-    plot_signals_heatmap,
-)
-
-__all__ = [
-    "plot_kline",
-    "plot_kline_with_signals",
-    "plot_signals_only",
-    "plot_multi_stock_signals",
-    "plot_signals_heatmap",
-]
