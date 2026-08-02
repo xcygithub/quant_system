@@ -114,6 +114,40 @@ class ChartContainer(QFrame):
         if self._web_view:
             self._web_view.setHtml(html)
 
+    def set_message(self, text: str, level: str = "info"):
+        """显示占位提示（替代 st.info / st.warning 出现在图表位置的场景）
+
+        用于「暂无数据 / 正在加载 / 渲染失败」等空状态，避免留下一块空白画布。
+
+        Args:
+            text: 提示文本
+            level: info（灰）/ warning（橙）/ error（红）
+        """
+        colors = {
+            "info": "#6b7280",
+            "warning": "#d97706",
+            "error": "#dc2626",
+        }
+        color = colors.get(level, colors["info"])
+        safe_text = (
+            str(text)
+            .replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+            .replace("\n", "<br/>")
+        )
+        html = (
+            "<div style=\"display:flex;align-items:center;justify-content:center;"
+            "height:100%;min-height:220px;margin:0;font-family:"
+            "'Microsoft YaHei','PingFang SC',sans-serif;background:#ffffff;\">"
+            f"<span style=\"color:{color};font-size:14px;text-align:center;\">"
+            f"{safe_text}</span></div>"
+        )
+        if self._web_view:
+            self._web_view.setHtml(html)
+        else:
+            logger.info("ChartContainer 占位提示（无 WebEngine）: %s", text)
+
     def clear(self):
         """清除图表"""
         if self._web_view:

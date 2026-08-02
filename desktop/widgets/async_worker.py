@@ -11,7 +11,7 @@
 包裹的耗时操作包括行情加载、回测运行、信号扫描、数据获取等。
 """
 import logging
-from PySide6.QtCore import QThread, Signal
+from PySide6.QtCore import QThread, Signal, QTimer
 from PySide6.QtWidgets import QProgressDialog
 
 logger = logging.getLogger(__name__)
@@ -22,11 +22,81 @@ class CancelledError(Exception):
     pass
 
 
-class AsyncWorker(QThread):
+# ---------------------------------------------------------------------------
+# 活跃 worker 注册表
+#
+# QThread 在运行期间若被 Python 垃圾回收，Qt 会直接 abort 整个进程
+# （"QThread: Destroyed while thread is still running"），且不产生 Python 异常，
+# 排查成本极高。调用方很容易把 worker 写成局部变量而踩中此坑，
+# 因此在基础设施层统一持有强引用，线程结束后自动释放。
+# ---------------------------------------------------------------------------
+_ACTIVE_WORKERS = set()
+
+
+def _sweep_workers():
+    """回收已结束的 worker 引用"""
+    for w in list(_ACTIVE_WORKERS):
+        try:
+            if w.isFinished():
+                _ACTIVE_WORKERS.discard(w)
+        except RuntimeError:
+            # 底层 C++ 对象已被销毁
+            _ACTIVE_WORKERS.discard(w)
+
+
+def active_worker_count():
+    """当前仍被持有的 worker 数量（供测试与调试使用）"""
+    _sweep_workers()
+    return len(_ACTIVE_WORKERS)
+
+
+def shutdown_workers(timeout_ms=3000):
+    """请求所有活跃 worker 结束并等待，供应用退出时调用"""
+    for w in list(_ACTIVE_WORKERS):
+        try:
+            if hasattr(w, "cancel"):
+                w.cancel()
+        except RuntimeError:
+            continue
+    for w in list(_ACTIVE_WORKERS):
+        try:
+            if w.isRunning():
+                w.wait(timeout_ms)
+        except RuntimeError:
+            pass
+    _ACTIVE_WORKERS.clear()
+
+
+class _WorkerRetainMixin:
+    """让 worker 在运行期间自持强引用，避免被 GC 掉导致进程 abort"""
+
+    def _install_retain(self):
+        # finished / error / cancelled 均在子线程发出，
+        # 经队列连接投递到主线程后再触发回收
+        for sig_name in ("finished", "error", "cancelled"):
+            sig = getattr(self, sig_name, None)
+            if sig is not None:
+                sig.connect(self._schedule_release)
+
+    def _schedule_release(self, *_args):
+        # 此刻 run() 刚发完信号、线程尚未完全退出，延后一拍再回收
+        QTimer.singleShot(0, _sweep_workers)
+        QTimer.singleShot(200, _sweep_workers)
+
+    def start(self, *args, **kwargs):
+        _sweep_workers()
+        _ACTIVE_WORKERS.add(self)
+        super().start(*args, **kwargs)
+
+
+class AsyncWorker(_WorkerRetainMixin, QThread):
     """简单异步任务执行器
 
     在子线程中执行任意函数，通过信号通知结果。
     替代 st.spinner 的阻塞式调用。
+
+    启动后 worker 会被内部注册表自动持有，线程结束后释放，
+    因此调用方即使把它写成局部变量也不会导致进程崩溃。
 
     Signals:
         finished(object): 任务完成，携带返回值
@@ -46,6 +116,7 @@ class AsyncWorker(QThread):
         self._func = func
         self._args = args
         self._kwargs = kwargs
+        self._install_retain()
 
     def run(self):
         try:
@@ -56,7 +127,7 @@ class AsyncWorker(QThread):
             self.error.emit(str(e))
 
 
-class ProgressWorker(QThread):
+class ProgressWorker(_WorkerRetainMixin, QThread):
     """带进度回调的异步任务执行器
 
     支持进度反馈和取消。func 可接受可选的 progress_callback 参数。
@@ -97,6 +168,7 @@ class ProgressWorker(QThread):
         self._kwargs = kwargs
         self._use_callback = use_callback
         self._cancelled = False
+        self._install_retain()
 
     def cancel(self):
         """请求取消任务（设置标志，由 func 通过 callback 检查）"""

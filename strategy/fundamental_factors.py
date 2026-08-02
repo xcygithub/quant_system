@@ -137,6 +137,11 @@ class FundamentalFactors:
 
         优先使用 profit_data.pub_date；若无，则退化为 report_date + lag_days。
         """
+        # 注意：必须用 try/finally 关闭连接。
+        # 早期写法把 conn.close() 放在 try 内部、异常被 except 吞掉，
+        # 一旦查询失败（例如老库缺少 pub_date 列）就会泄漏一个 sqlite 连接，
+        # 在长驻的桌面客户端里会持续累积，Windows 下还会锁住 db 文件。
+        conn = None
         try:
             conn = sqlite3.connect(self.fdm.db_path)
             row = conn.execute(
@@ -148,13 +153,18 @@ class FundamentalFactors:
                 """,
                 (symbol, report_date),
             ).fetchone()
-            conn.close()
             if row and row[0]:
                 pub_dt = pd.to_datetime(str(row[0]), errors="coerce")
                 if pd.notna(pub_dt):
                     return pub_dt.strftime("%Y-%m-%d")
         except Exception:
             pass
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
 
         fallback_dt = pd.to_datetime(report_date, errors="coerce")
         if pd.isna(fallback_dt):

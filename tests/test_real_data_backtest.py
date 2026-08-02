@@ -2,7 +2,9 @@
 多股票回测测试 - 使用真实数据库数据
 """
 import sys
-sys.path.insert(0, 'c:/Users/FY/WorkBuddy/Claw/quant_system')
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import pandas as pd
 import numpy as np
@@ -122,10 +124,14 @@ def test_with_real_data():
     details_df = backtest.get_trade_details_df()
     if not details_df.empty:
         print(f"\n=== Trade Details DataFrame ===")
-        # 使用utf-8编码避免中文编码问题
-        import io
-        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
-        print(details_df.to_string())
+        # 注意：不要在这里替换 sys.stdout。
+        # 早期脚本模式下曾用 io.TextIOWrapper(sys.stdout.buffer) 解决中文编码，
+        # 但在 pytest 下会把 capture 对象的底层 buffer 包住并在回收时关闭它，
+        # 导致本测试之后的所有用例报 "ValueError: I/O operation on closed file"。
+        try:
+            print(details_df.to_string())
+        except UnicodeEncodeError:
+            print(details_df.to_string().encode('utf-8', 'replace').decode('utf-8'))
 
 
 if __name__ == "__main__":

@@ -279,3 +279,25 @@ class TestChartContainer:
     def test_clear(self, qapp):
         c = ChartContainer()
         c.clear()  # 不应抛异常
+
+    def test_set_message_exists(self, qapp):
+        """回归：4个页面共13处调用 set_message，该 API 必须存在"""
+        c = ChartContainer()
+        assert hasattr(c, 'set_message')
+        c.set_message('暂无回测数据')          # 不应抛异常
+
+    def test_set_message_levels(self, qapp):
+        c = ChartContainer()
+        for level in ('info', 'warning', 'error', '未知级别'):
+            c.set_message('提示文本', level=level)
+
+    def test_set_message_escapes_html(self, qapp):
+        """文本里的 < > & 需要转义，避免破坏占位 HTML"""
+        c = ChartContainer()
+        c.set_message('渲染失败: <script> & "x"')
+
+    def test_pages_calling_set_message_are_covered(self, qapp):
+        """静态校验：页面里调用的 ChartContainer 方法都真实存在"""
+        used = {'set_figure', 'set_html', 'set_message', 'clear'}
+        missing = [m for m in used if not hasattr(ChartContainer, m)]
+        assert not missing, f'ChartContainer 缺少方法: {missing}'

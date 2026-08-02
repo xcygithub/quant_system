@@ -31,6 +31,9 @@ stock_data/
 _desktop_startup_ok.txt
 *.tmp
 *.bak
+_tmp_*.py
+_tmp_*.txt
+.tmp_check/
 
 # ===== AI 工作记忆（本地产物，不入仓） =====
 .workbuddy/memory/

@@ -184,13 +184,21 @@ class MainWindow(QMainWindow):
     # ========== 资源清理 ==========
 
     def closeEvent(self, event: QCloseEvent):
-        """窗口关闭事件：资源清理"""
+        """窗口关闭事件：等待后台线程结束并释放数据层连接"""
         logger.info("应用正在关闭...")
 
+        # 1) 请求所有后台 worker 取消并等待退出。
+        #    QThread 若在运行中被销毁，Qt 会直接 abort 进程，因此必须先等。
         try:
-            # 关闭 DataManager（如果存在）
-            # 注意：阶段1不连接数据层，后续阶段添加
-            pass
+            from desktop.widgets.async_worker import shutdown_workers
+            shutdown_workers(timeout_ms=3000)
+        except Exception as e:
+            logger.error(f"关闭后台任务出错: {e}")
+
+        # 2) 释放共享管理器持有的数据库连接
+        try:
+            from desktop.models.managers import Managers
+            Managers.instance().close_all()
         except Exception as e:
             logger.error(f"资源清理出错: {e}")
 

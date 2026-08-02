@@ -15,7 +15,8 @@ StockSelector 股票选择器 — 替代 st.selectbox 股票选择（18处）
 from typing import Dict, List, Optional
 from PySide6.QtWidgets import (QWidget, QComboBox, QHBoxLayout, QLabel,
                                  QLineEdit, QRadioButton, QButtonGroup,
-                                 QVBoxLayout, QCompleter, QFrame)
+                                 QVBoxLayout, QCompleter, QFrame,
+                                 QCheckBox, QScrollArea, QGridLayout)
 from PySide6.QtCore import Signal, Qt, QStringListModel
 
 
@@ -200,3 +201,119 @@ class StockPoolSelector(QWidget):
         else:
             self._status_label.setText(f"自定义列表: {len(stocks)} 只")
         self.stocks_changed.emit(stocks)
+
+
+class StockCheckboxGroup(QWidget):
+    """股票多选复选框组（带全选 + 滚动）
+
+    替代 web 屄 Tab2 与 Tab6 中几乎逐行相同的复选框股票选择器
+    （app.py:1435-1459 与 app.py:1731-1754）。通过 selection_changed
+    信号暴露当前勾选集合，天然替代 st.rerun 的自动重绘。
+
+    Signals:
+        selection_changed(list): 当前勾选的股票代码列表变化
+
+    Usage:
+        group = StockCheckboxGroup()
+        group.set_stocks([("000001.SZ", "平安银行"), ("600000.SH", "浦发银行")])
+        group.selection_changed.connect(self._on_selection_changed)
+        selected = group.get_selected()  # ["000001.SZ", ...]
+    """
+
+    selection_changed = Signal(list)
+
+    def __init__(self, parent=None, columns: int = 2, max_height: int = 220):
+        super().__init__(parent)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+
+        self._select_all = QCheckBox("全选")
+        self._select_all.stateChanged.connect(self._on_select_all)
+        layout.addWidget(self._select_all)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setMaximumHeight(max_height)
+        self._list_widget = QWidget()
+        self._grid = QGridLayout(self._list_widget)
+        self._grid.setContentsMargins(4, 4, 4, 4)
+        self._grid.setSpacing(4)
+        scroll.setWidget(self._list_widget)
+        layout.addWidget(scroll, 1)
+
+        self._checkboxes = {}   # symbol -> QCheckBox
+        self._columns = columns
+        self._building = False
+
+    def set_stocks(self, stocks: List[tuple]):
+        """设置股票列表
+
+        Args:
+            stocks: [(symbol, name), ...]
+        """
+        self._building = True
+        for cb in self._checkboxes.values():
+            cb.deleteLater()
+        self._checkboxes = {}
+        # 清空 grid 中残留的子 widget
+        while self._grid.count():
+            item = self._grid.takeAt(0)
+            w = item.widget()
+            if w:
+                w.deleteLater()
+
+        for i, (symbol, name) in enumerate(stocks):
+            cb = QCheckBox(f"{symbol} {name}")
+            cb.setProperty("symbol", symbol)
+            cb.stateChanged.connect(
+                lambda _state, s=symbol: self._on_cb_changed(s)
+            )
+            row = i // self._columns
+            col = i % self._columns
+            self._grid.addWidget(cb, row, col)
+            self._checkboxes[symbol] = cb
+        self._building = False
+        self._update_select_all_state()
+
+    def get_selected(self) -> List[str]:
+        """获取当前勾选的股票代码列表"""
+        return [s for s, cb in self._checkboxes.items() if cb.isChecked()]
+
+    def set_selected(self, symbols: List[str]):
+        """设置勾选集合"""
+        self._building = True
+        symbol_set = set(symbols)
+        for s, cb in self._checkboxes.items():
+            cb.setChecked(s in symbol_set)
+        self._building = False
+        self._update_select_all_state()
+        self.selection_changed.emit(self.get_selected())
+
+    def _on_cb_changed(self, symbol: str):
+        if self._building:
+            return
+        self._update_select_all_state()
+        self.selection_changed.emit(self.get_selected())
+
+    def _on_select_all(self, state: int):
+        if self._building:
+            return
+        checked = (state == Qt.Checked)
+        self._building = True
+        for cb in self._checkboxes.values():
+            cb.setChecked(checked)
+        self._building = False
+        self.selection_changed.emit(self.get_selected())
+
+    def _update_select_all_state(self):
+        n = len(self._checkboxes)
+        sel = len(self.get_selected())
+        self._building = True
+        if n == 0 or sel == 0:
+            self._select_all.setCheckState(Qt.Unchecked)
+        elif sel == n:
+            self._select_all.setCheckState(Qt.Checked)
+        else:
+            self._select_all.setCheckState(Qt.PartiallyChecked)
+        self._building = False
