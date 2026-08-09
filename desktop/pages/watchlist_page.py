@@ -221,6 +221,10 @@ class WatchlistPage(BasePage):
     # ============ 列表视图 ============
 
     def _render_list(self):
+        # 自增 token：让仍在运行的行情/K线 worker 完成后直接 return，
+        # 避免其回调访问已被 _clear_view 删除的列表/详情控件（竞态崩溃）
+        self._quotes_token += 1
+        self._detail_token += 1
         self._view_mode = "list"
         self._clear_view()
 
@@ -429,7 +433,12 @@ class WatchlistPage(BasePage):
         return sorted(rows, key=lambda r: r["symbol"])
 
     def _render_overview(self, rows):
-        layout = self._overview_container.layout()
+        # 防御：视图已切换（_clear_view 删除过本容器）时静默返回，避免 UI 卡死
+        try:
+            layout = self._overview_container.layout()
+        except RuntimeError:
+            logger.debug("_render_overview: 容器已被删除，跳过（旧 worker 回调）")
+            return
         self._clear_layout(layout)
         up = sum(1 for r in rows if r["pct_change"] is not None and r["pct_change"] > 0)
         down = sum(1 for r in rows if r["pct_change"] is not None and r["pct_change"] < 0)
@@ -444,7 +453,12 @@ class WatchlistPage(BasePage):
         layout.addStretch(1)
 
     def _render_table_section(self):
-        layout = self._table_container.layout()
+        # 防御：视图已切换（_clear_view 删除过本容器）时静默返回，避免 UI 卡死
+        try:
+            layout = self._table_container.layout()
+        except RuntimeError:
+            logger.debug("_render_table_section: 容器已被删除，跳过（旧 worker 回调）")
+            return
         self._clear_layout(layout)
 
         rows = self._all_rows
@@ -697,6 +711,9 @@ class WatchlistPage(BasePage):
     # ============ 详情视图 ============
 
     def _render_detail(self, symbol):
+        # 自增 token：让列表视图启动的行情 worker 完成后直接 return，
+        # 避免其回调访问已被 _clear_view 删除的列表控件（竞态崩溃）
+        self._quotes_token += 1
         self._view_mode = "detail"
         self._detail_symbol = symbol
         self._detail_df = None
@@ -757,7 +774,12 @@ class WatchlistPage(BasePage):
         self._load_detail()
 
     def _load_detail(self):
-        self._chart.set_message("正在加载数据...")
+        # 防御：视图已切换（_chart 已被 _clear_view 删除）时静默返回
+        try:
+            self._chart.set_message("正在加载数据...")
+        except RuntimeError:
+            logger.debug("_load_detail: 图表容器已被删除，跳过（视图已切换）")
+            return
         self._detail_token += 1
         token = self._detail_token
         end = datetime.now()
@@ -785,7 +807,12 @@ class WatchlistPage(BasePage):
         self._render_detail_table(df)
 
     def _render_detail_metrics(self, df):
-        layout = self._detail_metric_container.layout()
+        # 防御：视图已切换（_clear_view 删除过本容器）时静默返回
+        try:
+            layout = self._detail_metric_container.layout()
+        except RuntimeError:
+            logger.debug("_render_detail_metrics: 容器已被删除，跳过（旧 worker 回调）")
+            return
         self._clear_layout(layout)
         latest = df.iloc[-1]
         prev = df.iloc[-2] if len(df) > 1 else latest
@@ -822,7 +849,12 @@ class WatchlistPage(BasePage):
             self._chart.set_message(f"图表渲染失败: {e}")
 
     def _render_detail_table(self, df):
-        layout = self._detail_table_container.layout()
+        # 防御：视图已切换（_clear_view 删除过本容器）时静默返回
+        try:
+            layout = self._detail_table_container.layout()
+        except RuntimeError:
+            logger.debug("_render_detail_table: 容器已被删除，跳过（旧 worker 回调）")
+            return
         self._clear_layout(layout)
         if df is None or df.empty:
             layout.addWidget(QLabel("暂无数据"))
