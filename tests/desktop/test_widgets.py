@@ -147,6 +147,63 @@ class TestMessageBar:
         bar.clear()
         assert bar._text_label.text() == ''
 
+    def test_default_auto_clear_for_info(self, qapp):
+        """info 默认 5s 自动清除，应启动 timer"""
+        bar = MessageBar(closable=False)
+        bar.info('loading...')
+        assert bar._auto_clear_timer is not None
+        assert bar._auto_clear_timer.isActive()
+
+    def test_default_auto_clear_for_success(self, qapp):
+        """success 默认 3s 自动清除，应启动 timer"""
+        bar = MessageBar(closable=False)
+        bar.success('done')
+        assert bar._auto_clear_timer is not None
+        assert bar._auto_clear_timer.isActive()
+
+    def test_no_auto_clear_for_error(self, qapp):
+        """error 默认持续显示，不应启动 timer"""
+        bar = MessageBar(closable=False)
+        bar.error('failed')
+        assert bar._auto_clear_timer is None
+
+    def test_no_auto_clear_for_warning(self, qapp):
+        """warning 默认持续显示，不应启动 timer"""
+        bar = MessageBar(closable=False)
+        bar.warning('warn')
+        assert bar._auto_clear_timer is None
+
+    def test_explicit_auto_clear_zero_disables(self, qapp):
+        """auto_clear_ms=0 显式禁用自动清除"""
+        bar = MessageBar(closable=False)
+        bar.info('persistent', auto_clear_ms=0)
+        assert bar._auto_clear_timer is None
+
+    def test_explicit_auto_clear_for_error(self, qapp):
+        """error 也能显式开启自动清除"""
+        bar = MessageBar(closable=False)
+        bar.error('temp error', auto_clear_ms=3000)
+        assert bar._auto_clear_timer is not None
+        assert bar._auto_clear_timer.isActive()
+
+    def test_clear_cancels_auto_clear_timer(self, qapp):
+        """clear() 应取消已调度的自动清除 timer"""
+        bar = MessageBar(closable=False)
+        bar.info('will be cleared')
+        assert bar._auto_clear_timer is not None
+        bar.clear()
+        assert bar._auto_clear_timer is None
+
+    def test_new_message_resets_timer(self, qapp):
+        """连续调用 show_message 应取消旧 timer 并启动新 timer"""
+        bar = MessageBar(closable=False)
+        bar.info('first')
+        old_timer = bar._auto_clear_timer
+        bar.info('second')
+        assert bar._auto_clear_timer is not None
+        assert bar._auto_clear_timer is not old_timer
+        assert not old_timer.isActive()  # 旧 timer 已停止
+
 
 # ===== MetricCard =====
 

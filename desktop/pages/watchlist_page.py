@@ -13,6 +13,7 @@ st.rerun 做整页重渲染。桌面版改用：
 - 列表视图：添加自选股、分组/排序/关键字筛选、分页、行情总览、删除、导出本组
 - 详情视图：多周期 K 线、核心行情指标、数据表、刷新数据
 """
+import logging
 from datetime import datetime, timedelta
 
 import pandas as pd
@@ -20,8 +21,11 @@ import pandas as pd
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame, QGroupBox,
     QPushButton, QComboBox, QLineEdit, QCheckBox, QFormLayout,
+    QScrollArea,
 )
 from PySide6.QtCore import Qt
+
+logger = logging.getLogger(__name__)
 
 from desktop.pages.base_page import BasePage
 from desktop.widgets.stock_selector import StockSelector
@@ -29,7 +33,7 @@ from desktop.widgets.pandas_table import PandasTableView, make_change_color_rule
 from desktop.widgets.metric_card import MetricCard
 from desktop.widgets.message_bar import MessageBar
 from desktop.widgets.chart_container import ChartContainer
-from desktop.widgets.async_worker import AsyncWorker
+from desktop.widgets.async_worker import AsyncWorker, run_with_progress
 from desktop.models.managers import Managers
 from desktop.models.app_state import AppState
 
@@ -73,6 +77,50 @@ def _load_kline(db_path: str, symbol: str, start: str, end: str) -> pd.DataFrame
     """从本地缓存读取单只股票 K 线数据（无网络）。"""
     provider = CacheOnlyProvider(db_path)
     return provider.get_stock_data(symbol, start, end)
+
+
+def _batch_refresh_quotes(db_path: str, symbols: list,
+                          progress_callback=None) -> dict:
+    """批量从 Baostock 在线获取最近 K 线数据并写入本地缓存。
+
+    在子线程中执行（通过 ProgressWorker），自建 DataManager 连接，
+    避免跨线程 SQLite 复用主线程实例。
+
+    Args:
+        db_path: 数据库路径
+        symbols: 股票代码列表
+        progress_callback: (percent, message) -> bool；返回 False 表示取消
+
+    Returns:
+        {"success": int, "failed": list} 统计
+    """
+    from data.data_manager import DataManager
+
+    dm = DataManager(db_path)
+    total = len(symbols)
+    success = 0
+    failed = []
+    try:
+        for i, sym in enumerate(symbols):
+            if progress_callback and not progress_callback(
+                int(i / max(total, 1) * 100),
+                f"正在更新 {sym} ({i+1}/{total})..."
+            ):
+                break
+            try:
+                dm.update_recent_data([sym], days=30)
+                success += 1
+            except Exception:
+                failed.append(sym)
+        # 最后一帧
+        if progress_callback:
+            progress_callback(100, f"完成：成功 {success}，失败 {len(failed)}")
+    finally:
+        try:
+            dm.close()
+        except Exception:
+            pass
+    return {"success": success, "failed": failed}
 
 
 def _resample_kline(df: pd.DataFrame, period: str) -> pd.DataFrame:
@@ -136,11 +184,20 @@ class WatchlistPage(BasePage):
         self._msg = MessageBar()
         self.content_layout.addWidget(self._msg)
 
+        # 用 QScrollArea 包裹视图容器，避免窗口缩小时控件被截断/重叠
+        self._scroll = QScrollArea()
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setFrameShape(QFrame.NoFrame)
+        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self._scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.content_layout.addWidget(self._scroll, 1)
+
         self._view_container = QWidget()
+        self._view_container.setObjectName("watchlistViewContainer")
         self._view_layout = QVBoxLayout(self._view_container)
-        self._view_layout.setContentsMargins(0, 0, 0, 0)
+        self._view_layout.setContentsMargins(8, 8, 8, 8)
         self._view_layout.setSpacing(12)
-        self.content_layout.addWidget(self._view_container, 1)
+        self._scroll.setWidget(self._view_container)
 
         self._render_list()
 
@@ -167,19 +224,35 @@ class WatchlistPage(BasePage):
         self._view_mode = "list"
         self._clear_view()
 
-        # --- 添加自选股 ---
+        # --- 添加自选股（默认折叠，避免占用过多垂直空间）---
         add_box = QGroupBox("➕ 添加自选股")
         add_box.setCheckable(True)
         add_box.setChecked(False)
-        add_form = QFormLayout(add_box)
+        add_box_layout = QVBoxLayout(add_box)
+        add_box_layout.setContentsMargins(12, 8, 12, 12)
+        add_box_layout.setSpacing(6)
+
+        # 表单容器（折叠/展开受 add_box.toggled 控制，
+        # 解决 PySide6 上 setChecked(False) 在某些版本不会自动折叠内容的问题）
+        self._add_form_widget = QWidget()
+        add_form = QFormLayout(self._add_form_widget)
+        add_form.setContentsMargins(0, 0, 0, 0)
+        add_form.setHorizontalSpacing(12)
+        add_form.setVerticalSpacing(6)
+        add_form.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
+
         self._add_symbol_edit = QLineEdit()
         self._add_symbol_edit.setPlaceholderText("如: 000001.SH / SH:601899 / 紫金矿业(SH:601899)")
+        self._add_symbol_edit.setMaximumWidth(280)
         self._add_name_edit = QLineEdit()
         self._add_name_edit.setPlaceholderText("如: 平安银行（留空则智能推断）")
+        self._add_name_edit.setMaximumWidth(280)
         self._add_group_combo = QComboBox()
         self._add_group_combo.addItems(GROUP_CHOICES)
+        self._add_group_combo.setMaximumWidth(180)
         self._add_custom_edit = QLineEdit()
         self._add_custom_edit.setPlaceholderText("自定义分组名")
+        self._add_custom_edit.setMaximumWidth(180)
         self._add_custom_edit.setVisible(False)
         self._add_group_combo.currentTextChanged.connect(
             lambda t: self._add_custom_edit.setVisible(t == "自定义"))
@@ -190,6 +263,13 @@ class WatchlistPage(BasePage):
         add_form.addRow("分组", self._add_group_combo)
         add_form.addRow("自定义分组", self._add_custom_edit)
         add_form.addRow(add_btn)
+        add_box_layout.addWidget(self._add_form_widget)
+
+        # 显式同步折叠状态（避免依赖 Qt 自动行为）
+        def _on_add_box_toggled(checked: bool):
+            self._add_form_widget.setVisible(checked)
+        add_box.toggled.connect(_on_add_box_toggled)
+        _on_add_box_toggled(False)  # 初始隐藏表单
         self._view_layout.addWidget(add_box)
 
         # --- 筛选工具栏 ---
@@ -237,9 +317,14 @@ class WatchlistPage(BasePage):
         op_bar = QHBoxLayout()
         refresh_btn = QPushButton("🔄 刷新行情")
         refresh_btn.clicked.connect(self._on_refresh_quotes)
+        refresh_btn.setToolTip("重新读取本地缓存的最新行情")
+        batch_btn = QPushButton("📡 批量刷新行情")
+        batch_btn.clicked.connect(self._on_batch_refresh_quotes)
+        batch_btn.setToolTip("通过 Baostock 在线获取当前筛选分组的最近行情数据")
         export_btn = QPushButton("导出本组用于回测")
         export_btn.clicked.connect(self._on_export_group)
         op_bar.addWidget(refresh_btn)
+        op_bar.addWidget(batch_btn)
         op_bar.addWidget(export_btn)
         op_bar.addStretch(1)
         self._view_layout.addLayout(op_bar)
@@ -277,6 +362,14 @@ class WatchlistPage(BasePage):
         token = self._quotes_token
         stocks = self._compute_filtered_stocks()
         symbols = [s[0] for s in stocks]
+        if not symbols:
+            self._all_rows = []
+            self._render_overview(self._all_rows)
+            self._render_table_section()
+            self._msg.info("当前分组无自选股，请先添加或调整筛选条件")
+            return
+        # 持续显示加载状态，等 _on_quotes_loaded 用结果替换
+        self._msg.info(f"⏳ 正在加载 {len(symbols)} 只股票行情...", auto_clear_ms=0)
         worker = AsyncWorker(_get_latest_quotes, self._db_path, symbols, parent=self)
         worker.finished.connect(lambda rows: self._on_quotes_loaded(rows, stocks, token))
         worker.error.connect(lambda e: self._msg.error(f"行情加载失败: {e}"))
@@ -306,6 +399,22 @@ class WatchlistPage(BasePage):
 
         self._render_overview(self._all_rows)
         self._render_table_section()
+
+        # 根据数据完整性给出反馈
+        missing = sum(1 for r in self._all_rows if r["close"] is None)
+        if missing == total and total > 0:
+            self._msg.warning(
+                f"⚠️ 当前 {total} 只自选股均无本地行情数据，"
+                f"请点击「🔄 批量刷新行情」通过 Baostock 在线获取"
+            )
+        elif missing > 0:
+            self._msg.warning(
+                f"⚠️ {missing}/{total} 只股票行情缺失，"
+                f"可点击「🔄 批量刷新行情」补齐数据",
+                auto_clear_ms=8000,
+            )
+        else:
+            self._msg.success(f"✅ 已加载 {total} 只股票行情")
 
     def _sort_rows(self, rows):
         if self._sort_by == "涨跌幅从高到低":
@@ -359,29 +468,70 @@ class WatchlistPage(BasePage):
             df,
             formatters={"最新价": "{:.2f}", "涨跌幅(%)": "{:+.2f}", "成交量(万)": "{:.1f}"},
             color_rules={"涨跌幅(%)": make_change_color_rule()},
+            auto_resize=False,   # 关掉默认按内容拉伸，避免列宽飘移
         )
         table.row_double_clicked.connect(self._on_row_activated)
+
+        # 显式列宽：合计约 630px，留余量给滚动条
+        _COL_WIDTHS = {
+            "代码": 100,
+            "名称": 130,
+            "最新价": 90,
+            "涨跌幅(%)": 90,
+            "成交量(万)": 110,
+            "分组": 80,
+        }
+        header = table.horizontalHeader()
+        for col_idx, col_name in enumerate(df.columns):
+            w = _COL_WIDTHS.get(col_name, 80)
+            header.resizeSection(col_idx, w)
+
         table.setMinimumHeight(380)
         layout.addWidget(table, 1)
 
-        # 分页
-        pg = QHBoxLayout()
+        # 数据缺失提示（仅当本页 close 列缺失比例 > 50% 时显示）
+        missing_in_page = sum(1 for r in page_rows if r["close"] is None)
+        if page_rows and missing_in_page / len(page_rows) > 0.5:
+            hint = QLabel(
+                f"⚠️ 当前页 {len(page_rows)} 只股票中 {missing_in_page} 只"
+                f"行情数据缺失。请点击「📡 批量刷新行情」按钮通过 Baostock 在线获取。"
+            )
+            hint.setWordWrap(True)
+            hint.setStyleSheet(
+                "QLabel { background-color: #fef3c7; color: #92400e; "
+                "border: 1px solid #fcd34d; border-radius: 4px; "
+                "padding: 8px 12px; font-size: 13px; }"
+            )
+            layout.addWidget(hint)
+
+        # 分页 + 删除：并排两个 QGroupBox，避免挤压重叠
+        bottom_bar = QHBoxLayout()
+        bottom_bar.setSpacing(12)
+
+        # 分页 GroupBox
+        page_box = QGroupBox("📄 分页")
+        page_box_layout = QHBoxLayout(page_box)
+        page_box_layout.setContentsMargins(12, 8, 12, 8)
         prev_btn = QPushButton("◀ 上一页")
         prev_btn.setEnabled(self._page > 1)
         prev_btn.clicked.connect(self._on_prev_page)
         next_btn = QPushButton("下一页 ▶")
         next_btn.setEnabled(self._page < pages)
         next_btn.clicked.connect(self._on_next_page)
-        label = QLabel(f"第 {self._page}/{pages} 页 · 共 {total} 只")
-        label.setAlignment(Qt.AlignCenter)
-        pg.addWidget(prev_btn)
-        pg.addWidget(label, 1)
-        pg.addWidget(next_btn)
-        layout.addLayout(pg)
+        page_label = QLabel(f"第 {self._page}/{pages} 页 · 共 {total} 只")
+        page_label.setAlignment(Qt.AlignCenter)
+        page_box_layout.addWidget(prev_btn)
+        page_box_layout.addWidget(page_label, 1)
+        page_box_layout.addWidget(next_btn)
+        bottom_bar.addWidget(page_box, 2)
 
-        # 删除控制
-        del_layout = QHBoxLayout()
+        # 删除 GroupBox
+        del_box = QGroupBox("🗑️ 删除自选股")
+        del_layout = QHBoxLayout(del_box)
+        del_layout.setContentsMargins(12, 8, 12, 8)
+        del_layout.setSpacing(8)
         del_combo = QComboBox()
+        del_combo.setMinimumWidth(200)
         for r in rows:
             del_combo.addItem(f"{r['symbol']} {r['name']}", r["symbol"])
         if self._selected_stock:
@@ -401,12 +551,13 @@ class WatchlistPage(BasePage):
 
         confirm.stateChanged.connect(_update_enabled)
         del_btn.clicked.connect(self._on_delete_stock)
-        del_layout.addWidget(QLabel("删除目标:"))
-        del_layout.addWidget(del_combo)
+        del_layout.addWidget(QLabel("目标:"))
+        del_layout.addWidget(del_combo, 1)
         del_layout.addWidget(confirm)
         del_layout.addWidget(del_btn)
-        del_layout.addStretch(1)
-        layout.addLayout(del_layout)
+        bottom_bar.addWidget(del_box, 3)
+
+        layout.addLayout(bottom_bar)
 
     # ============ 列表交互 ============
 
@@ -456,8 +607,51 @@ class WatchlistPage(BasePage):
             self._schedule_quotes_load()
 
     def _on_refresh_quotes(self):
-        self._msg.info("正在刷新行情...")
+        # _schedule_quotes_load 内部已显示加载状态消息
         self._schedule_quotes_load()
+
+    def _on_batch_refresh_quotes(self):
+        """批量从 Baostock 在线补齐当前筛选分组的最近行情数据。"""
+        stocks = self._compute_filtered_stocks()
+        symbols = [s[0] for s in stocks]
+        if not symbols:
+            self._msg.warning("当前分组无自选股，请先添加")
+            return
+
+        self._msg.info(
+            f"⏳ 正在通过 Baostock 在线获取 {len(symbols)} 只股票行情，请稍候...",
+            auto_clear_ms=0,
+        )
+
+        worker = run_with_progress(
+            self,
+            _batch_refresh_quotes,
+            self._db_path,
+            symbols,
+            title="批量刷新行情",
+            message=f"正在更新 {len(symbols)} 只股票...",
+            cancelable=True,
+        )
+
+        def _on_done(result):
+            ok = result.get("success", 0) if isinstance(result, dict) else 0
+            failed = result.get("failed", []) if isinstance(result, dict) else []
+            if failed:
+                self._msg.warning(
+                    f"⚠️ 完成 {ok} 只，失败 {len(failed)} 只：{', '.join(failed[:5])}"
+                    + ("..." if len(failed) > 5 else ""),
+                    auto_clear_ms=8000,
+                )
+            else:
+                self._msg.success(f"✅ 已批量更新 {ok} 只股票行情")
+            # 刷新表格显示新数据
+            self._schedule_quotes_load()
+
+        def _on_error(err):
+            self._msg.error(f"批量刷新失败: {err}")
+
+        worker.finished.connect(_on_done)
+        worker.error.connect(_on_error)
 
     def _on_add_stock(self):
         symbol = self._add_symbol_edit.text().strip()
@@ -514,7 +708,7 @@ class WatchlistPage(BasePage):
         back_btn.clicked.connect(self._render_list)
         tb.addWidget(back_btn)
 
-        sel = StockSelector("切换股票")
+        sel = StockSelector(parent=self, label="切换股票")
         all_stocks = self._wl.get_all_stocks()
         name_map = {s.symbol: s.name for s in all_stocks}
         sel.set_stocks([s.symbol for s in all_stocks], name_map)
@@ -653,7 +847,7 @@ class WatchlistPage(BasePage):
             self._render_detail(symbol)
 
     def _on_refresh_detail(self):
-        self._msg.info("正在更新行情数据...")
+        self._msg.info(f"⏳ 正在更新 {self._detail_symbol} 行情数据...", auto_clear_ms=0)
         db_path = self._db_path
         symbol = self._detail_symbol
 
@@ -670,6 +864,6 @@ class WatchlistPage(BasePage):
             return True
 
         worker = AsyncWorker(_do, parent=self)
-        worker.finished.connect(lambda _: (self._msg.success("行情已更新"), self._load_detail()))
+        worker.finished.connect(lambda _: (self._msg.success("✅ 行情已更新"), self._load_detail()))
         worker.error.connect(lambda e: self._msg.error(f"更新失败: {e}"))
         worker.start()
