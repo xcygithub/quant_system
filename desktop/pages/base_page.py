@@ -31,27 +31,47 @@ class BasePage(QWidget):
         self._setup_ui()
 
     def _setup_ui(self):
-        """构建页面基础布局"""
+        """构建页面基础布局
+
+        UI 重设计后标题区：
+        - H1 样式左对齐，无背景色
+        - 副标题紧跟主标题下方
+        - 右侧可放全局操作入口（由子类通过 _build_title_actions 添加）
+        """
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setContentsMargins(24, 16, 24, 16)  # --space-6
         layout.setSpacing(12)
 
-        # 页面标题栏
+        # 页面标题栏（新设计：H1 样式，无深蓝色背景）
         if self._title:
             title_frame = QFrame()
             title_frame.setObjectName("pageTitle")
             title_layout = QHBoxLayout(title_frame)
-            title_layout.setContentsMargins(14, 12, 14, 12)
+            title_layout.setContentsMargins(0, 0, 0, 0)
+            title_layout.setSpacing(8)
+
+            # 左侧：主标题 + 副标题
+            title_left = QVBoxLayout()
+            title_left.setSpacing(2)
 
             title_label = QLabel(self._title)
             title_label.setObjectName("pageTitleMain")
-            title_layout.addWidget(title_label)
+            title_left.addWidget(title_label)
 
             if self._subtitle:
                 sub_label = QLabel(self._subtitle)
                 sub_label.setObjectName("pageTitleSub")
-                title_layout.addStretch()
-                title_layout.addWidget(sub_label)
+                title_left.addWidget(sub_label)
+
+            title_layout.addLayout(title_left, 1)
+
+            # 右侧：全局操作区域（子类可覆盖 _build_title_actions 添加按钮）
+            self._title_actions = QWidget()
+            self._title_actions_layout = QHBoxLayout(self._title_actions)
+            self._title_actions_layout.setContentsMargins(0, 0, 0, 0)
+            self._title_actions_layout.setSpacing(4)
+            self._build_title_actions(self._title_actions_layout)
+            title_layout.addWidget(self._title_actions)
 
             layout.addWidget(title_frame)
 
@@ -63,6 +83,10 @@ class BasePage(QWidget):
 
         # 子类在此填充内容
         self._build_content()
+
+    def _build_title_actions(self, layout):
+        """子类可重写：在标题栏右侧添加全局操作按钮（如设置、帮助）"""
+        pass
 
     def _build_content(self):
         """子类重写：构建页面具体内容"""

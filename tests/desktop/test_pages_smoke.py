@@ -12,10 +12,20 @@
 本测试在 MainWindow 里把 8 个页面全部构造 + 逐页切换 + 关闭，
 确保这类「只在集成时出现」的问题不再回归。
 """
+import os
+import sys
 import pytest
+
+os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
+_PROJECT_ROOT = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), '..', '..')
+)
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
 
 from desktop.main_window import MainWindow
 from desktop.widgets.async_worker import active_worker_count, shutdown_workers
+from desktop.pages import watchlist_page as wp_module
 
 
 EXPECTED_PAGES = [
@@ -151,5 +161,148 @@ class TestWatchlistPageDetail:
             qapp.processEvents()
 
             assert page._view_mode == "list"
+        finally:
+            shutdown_workers(timeout_ms=3000)
+
+
+class TestWatchlistUIRedesignCleanup:
+    """回归：UI 重设计后【刷新/自动刷新/导出回测】单一入口
+
+    关联 ISSUE-UI-04：原【刷新】按钮只读缓存、用户感觉"没动作"；
+    「更多」里「批量在线刷新」「导出本组回测」是重复入口。
+    本组测试锁住"单一入口"原则的清理结果，防止再次扩散入口。
+    """
+
+    def test_no_auto_refresh_fields(self, qapp):
+        """【自动刷新】相关字段/常量应已清理"""
+        from desktop.pages.watchlist_page import WatchlistPage
+        page = WatchlistPage()
+        try:
+            # 1. ToggleSwitch 已不再创建
+            assert not hasattr(page, "_auto_refresh_toggle"), \
+                "自动刷新开关应已删除"
+            # 2. 定时器字段已不再初始化
+            assert not hasattr(page, "_auto_refresh_timer"), \
+                "自动刷新定时器字段应已删除"
+            assert not hasattr(page, "_is_auto_refreshing"), \
+                "自动刷新状态字段应已删除"
+        finally:
+            shutdown_workers(timeout_ms=3000)
+
+    def test_no_auto_refresh_methods(self, qapp):
+        """【自动刷新】相关方法应已清理"""
+        assert not hasattr(wp_module.WatchlistPage, "_on_auto_refresh_toggled"), \
+            "_on_auto_refresh_toggled 应已删除"
+        assert not hasattr(wp_module.WatchlistPage, "_start_auto_refresh"), \
+            "_start_auto_refresh 应已删除"
+        assert not hasattr(wp_module.WatchlistPage, "_stop_auto_refresh"), \
+            "_stop_auto_refresh 应已删除"
+        assert not hasattr(wp_module.WatchlistPage, "_on_auto_refresh_tick"), \
+            "_on_auto_refresh_tick 应已删除"
+
+    def test_no_auto_refresh_constant(self, qapp):
+        """AUTO_REFRESH_INTERVAL_MS 常量应已清理"""
+        assert not hasattr(wp_module, "AUTO_REFRESH_INTERVAL_MS"), \
+            "AUTO_REFRESH_INTERVAL_MS 常量应已删除"
+
+    def test_no_export_group_method(self, qapp):
+        """_on_export_group（全组导出回测）应已删除，已被 _on_batch_export 替代"""
+        assert not hasattr(wp_module.WatchlistPage, "_on_export_group"), \
+            "_on_export_group 应已删除"
+
+    def test_refresh_btn_triggers_baostock(self, qapp):
+        """【刷新】按钮必须走 Baostock（_on_batch_refresh_quotes），不能只读缓存"""
+        from desktop.pages.watchlist_page import WatchlistPage
+        from unittest.mock import patch
+        page = WatchlistPage()
+        try:
+            with patch.object(page, "_on_batch_refresh_quotes",
+                              wraps=page._on_batch_refresh_quotes) as spy:
+                # 模拟用户点击【刷新】按钮
+                page._on_refresh_quotes()
+                # 必须触发 Baostock 入口
+                assert spy.called, \
+                    "【刷新】按钮必须调用 _on_batch_refresh_quotes（走 Baostock）"
+        finally:
+            shutdown_workers(timeout_ms=3000)
+
+    def test_more_menu_no_batch_refresh_no_export_group(self, qapp):
+        """【更多】菜单应不再包含「批量在线刷新」和「导出本组用于回测」"""
+        from desktop.pages.watchlist_page import WatchlistPage
+        from PySide6.QtWidgets import QToolButton
+        page = WatchlistPage()
+        try:
+            # 找到「更多」QToolButton
+            more_btn = None
+            for child in page.findChildren(QToolButton):
+                if child.text() == "更多":
+                    more_btn = child
+                    break
+            assert more_btn is not None, "未找到「更多」按钮"
+            menu = more_btn.menu()
+            assert menu is not None
+            action_texts = [a.text() for a in menu.actions() if a.text()]
+
+            # ISSUE-UI-04 修复：这两个重复入口应已删除
+            assert "批量在线刷新 (Baostock)" not in action_texts, \
+                "【更多】里「批量在线刷新」应已合并到工具栏【刷新】按钮"
+            assert "导出本组用于回测" not in action_texts, \
+                "【更多】里「导出本组用于回测」应已合并到底部【导出回测】"
+        finally:
+            shutdown_workers(timeout_ms=3000)
+
+    def test_batch_export_falls_back_to_full_group_when_no_check(self, qapp):
+        """底部【导出回测】无勾选时应退化导出全组，保持"全组导出"能力"""
+        from desktop.pages.watchlist_page import WatchlistPage
+        from unittest.mock import patch
+        page = WatchlistPage()
+        try:
+            # 模拟 _all_rows 有数据
+            page._all_rows = [
+                {"symbol": "000001.SH", "name": "平安银行"},
+                {"symbol": "600000.SH", "name": "浦发银行"},
+            ]
+            # 模拟 _table.get_checked_symbols 返回空（无勾选）
+            with patch.object(page, "_table", create=True) as mock_table:
+                type(mock_table).get_checked_symbols = lambda self: []
+                page._on_batch_export()
+                # 应退化导全组（2 只）
+                assert list(page._state.selected_stocks) == [
+                    "000001.SH", "600000.SH"
+                ], "无勾选时应退化导出全组"
+        finally:
+            shutdown_workers(timeout_ms=3000)
+
+    def test_refresh_btn_enabled_after_quotes_loaded(self, qapp):
+        """回归：行情 worker 完成后必须恢复【刷新】按钮 enabled 状态
+
+        历史 bug：删除自动刷新字段时误删了 `_on_quotes_loaded`/`_on_quotes_load_error`
+        里的 `setEnabled(True)`，只保留了 `setText("刷新")`，导致按钮永远是 disabled，
+        用户点了【刷新】没反应。锁住 enabled 状态恢复行为。
+        """
+        from desktop.pages.watchlist_page import WatchlistPage
+        from unittest.mock import patch
+        import time
+        page = WatchlistPage()
+        try:
+            def mock_get_latest(db_path, symbols):
+                return [
+                    {"symbol": s, "close": 10.0, "pct_change": 1.0, "volume_wan": 100.0}
+                    for s in symbols
+                ]
+
+            with patch("desktop.pages.watchlist_page._get_latest_quotes",
+                       mock_get_latest):
+                # 等初始 _schedule_quotes_load 的 worker 跑完
+                shutdown_workers(timeout_ms=2000)
+                for _ in range(30):
+                    qapp.processEvents()
+                    time.sleep(0.02)
+
+                # 关键断言：worker 完成后按钮必须恢复 enabled 和文字"刷新"
+                assert page._refresh_btn.isEnabled(), \
+                    "【刷新】按钮必须在行情加载完成后恢复 enabled（修复前永远是 disabled）"
+                assert page._refresh_btn.text() == "刷新", \
+                    f"按钮文字应为\"刷新\"，实际\"{page._refresh_btn.text()}\""
         finally:
             shutdown_workers(timeout_ms=3000)
