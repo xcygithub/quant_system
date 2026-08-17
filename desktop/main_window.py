@@ -55,7 +55,9 @@ class MainWindow(QMainWindow):
 
         self.setWindowTitle("量化交易系统 · 桌面版")
         self.resize(1400, 900)
-        self.setMinimumSize(1000, 650)
+        # v3.0：最小宽度 1080（tokens.WINDOW_MIN_WIDTH），低于此宽度金融表格无可用性
+        from desktop.styles import tokens
+        self.setMinimumSize(tokens.WINDOW_MIN_WIDTH, tokens.WINDOW_MIN_HEIGHT)
 
         self._setup_ui()
         self._setup_menu()
@@ -74,10 +76,11 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        # 侧边导航栏
+        # 侧边导航栏（v3.0：宽度统一 tokens.NAV_WIDTH）
         self._nav_list = QListWidget()
         self._nav_list.setObjectName("navList")
-        self._nav_list.setFixedWidth(180)
+        from desktop.styles import tokens as _tk
+        self._nav_list.setFixedWidth(_tk.NAV_WIDTH)
         self._nav_list.setIconSize(QSize(20, 20))
         self._nav_list.setCurrentRow(0)
 
@@ -133,7 +136,7 @@ class MainWindow(QMainWindow):
 
         # 右侧版本信息
         version_label = QLabel("v0.1.0")
-        version_label.setStyleSheet("color: #94a3b8;")
+        version_label.setObjectName("captionLabel")
         status.addPermanentWidget(version_label)
 
     def _setup_log_panel(self):

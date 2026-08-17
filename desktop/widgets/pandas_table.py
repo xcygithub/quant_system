@@ -18,15 +18,31 @@ from typing import Dict, Callable, Optional
 import pandas as pd
 import numpy as np
 from PySide6.QtCore import (QAbstractTableModel, Qt, QModelIndex, Signal)
-from PySide6.QtGui import QColor, QBrush
+from PySide6.QtGui import QColor, QBrush, QFont
 from PySide6.QtWidgets import (QTableView, QAbstractItemView,
                                  QHeaderView)
 
+from desktop.styles import tokens
 
-# ===== 颜色常量（中国股市惯例：涨红跌绿）=====
-COLOR_UP = "#dc2626"      # 红色 - 涨
-COLOR_DOWN = "#16a34a"    # 绿色 - 跌
-COLOR_FLAT = "#6b7280"    # 灰色 - 平
+
+# ===== 颜色常量（中国股市惯例：涨红跌绿，v3.0 从 tokens 取）=====
+COLOR_UP = tokens.UP        # 红色 - 涨
+COLOR_DOWN = tokens.DOWN    # 绿色 - 跌
+COLOR_FLAT = tokens.TEXT_3  # 灰色 - 平
+
+# 数字等宽字体（数值列对齐，v3.0）
+_NUMERIC_FONT = None
+
+
+def _numeric_font() -> QFont:
+    """数值单元格等宽数字字体（列内数字宽度一致，便于对齐比较）"""
+    global _NUMERIC_FONT
+    if _NUMERIC_FONT is None:
+        f = QFont("Consolas")
+        f.setStyleHint(QFont.TypeWriter)
+        f.setPointSize(10)
+        _NUMERIC_FONT = f
+    return _NUMERIC_FONT
 
 
 def make_change_color_rule(threshold: float = 0) -> Callable:
@@ -128,6 +144,11 @@ class PandasTableModel(QAbstractTableModel):
                 if color:
                     return QBrush(QColor(color))
 
+        elif role == Qt.FontRole:
+            # 数值单元格用等宽数字字体（v3.0：列内数字对齐）
+            if isinstance(value, (int, float, np.number)) and not pd.isna(value):
+                return _numeric_font()
+
         elif role == Qt.TextAlignmentRole:
             # 数值右对齐，文本左对齐
             if isinstance(value, (int, float, np.number)) and not pd.isna(value):
@@ -188,13 +209,16 @@ class PandasTableView(QTableView):
         self._setup_ui()
 
     def _setup_ui(self):
-        self.setAlternatingRowColors(True)
+        self.setAlternatingRowColors(False)  # v3.0：关闭斑马纹，靠 hover/选中分层
         self.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.setSelectionMode(QAbstractItemView.SingleSelection)
         self.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.horizontalHeader().setStretchLastSection(True)
         self.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
         self.verticalHeader().setVisible(False)  # 默认 hide_index
+        # v3.0：行高统一 40px（tokens.ROW_HEIGHT）
+        self.verticalHeader().setDefaultSectionSize(tokens.ROW_HEIGHT)
+        self.verticalHeader().setMinimumSectionSize(tokens.ROW_HEIGHT)
         self.setSortingEnabled(True)
         # 性能优化：大数据量时关闭自动调整
         self.setWordWrap(False)

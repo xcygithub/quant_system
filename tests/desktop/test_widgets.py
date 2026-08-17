@@ -56,13 +56,13 @@ class TestPandasTableModel:
         model = PandasTableModel(df, color_rules={'涨幅': make_change_color_rule()})
         brush = model.data(model.index(0, 0), Qt.ForegroundRole)
         assert brush is not None
-        assert brush.color().name() == COLOR_UP
+        assert brush.color().name().lower() == COLOR_UP.lower()
 
     def test_color_rule_down(self, qapp):
         df = pd.DataFrame({'涨幅': [-1.5]})
         model = PandasTableModel(df, color_rules={'涨幅': make_change_color_rule()})
         brush = model.data(model.index(0, 0), Qt.ForegroundRole)
-        assert brush.color().name() == COLOR_DOWN
+        assert brush.color().name().lower() == COLOR_DOWN.lower()
 
     def test_color_rule_nan(self, qapp):
         df = pd.DataFrame({'涨幅': [float('nan')]})

@@ -2,99 +2,78 @@
 标题组件族 — 替代 _render_page_title + HTML注入（25处）
 
 提供：
-- SectionTitle: 区块标题（最常用，左边框 + icon + 主副标题）
+- SectionTitle: 区块标题（v3.0 去横条化：H2 文字 + 底部细分隔线）
 - PageTitle: 页面标题（深色/浅色两种主题）
-- PageHero: 顶部产品头（大渐变卡 + 徽章列表）
+- PageHero: 顶部产品头（大纯色卡 + 徽章列表）
 
-设计依据：web 屄有4套标题组件：
-- .app-hero: 深蓝渐变大卡 + hero-badge 胶囊标签（render_app_hero）
-- .market-page-title: 深色渐变标题卡
-- .section-title: 左边框 + 浅蓝底 + icon+主副标题（_render_page_title）
-- _render_subsection_title: 小节标题
-
-注意：QSS 不支持复杂渐变，统一用纯色替代（计划文档已确认）。
+v3.0（UI 优化 Phase 2）：
+- SectionTitle 废除「蓝底横条 + 4px 左竖线」，改为安静的 H2 + 分隔线，
+  装饰噪音让位给数据（见 docs/ui_polish_plan.md D4）
+- 色值统一从 styles/tokens.py 取，样式由 theme.qss 承载
 """
 from typing import List, Optional
 from PySide6.QtWidgets import QFrame, QLabel, QHBoxLayout, QVBoxLayout
 from PySide6.QtCore import Qt
 
+from desktop.styles import tokens
+
 
 class SectionTitle(QFrame):
     """区块标题（最常用）
 
-    左边框 + icon + 主标题 + 副标题（可选）
-    替代 _render_page_title 的 .section-title 结构。
+    v3.0 样式：H2 主标题 + 可选副标题 + 底部 1px 分隔线（theme.qss 承载）。
 
     Usage:
-        title = SectionTitle("📊 多因子回测", "统一配置因子、权重与风控参数")
-        title = SectionTitle("🔬 因子分析", "因子计算、预处理与IC分析")
-        title = SectionTitle("📥 财务数据管理", "Baostock财务数据获取与管理")
+        title = SectionTitle("多因子回测", "统一配置因子、权重与风控参数")
+        title = SectionTitle("因子分析", "因子计算、预处理与IC分析")
     """
 
     def __init__(self, main_text: str, desc: str = "", icon: str = "",
                  parent=None):
         """
         Args:
-            main_text: 主标题（可含 emoji，如"📊 多因子回测"）
+            main_text: 主标题
             desc: 副标题描述（可选）
-            icon: 独立图标 emoji（若 main_text 已含 emoji 可不传）
+            icon: 独立图标 emoji（可选，置于主标题前）
         """
         super().__init__(parent)
         self.setObjectName("sectionTitle")
 
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(12, 8, 12, 8)
+        layout.setContentsMargins(2, 4, 2, 0)
         layout.setSpacing(8)
 
         if icon:
             icon_label = QLabel(icon)
-            icon_label.setStyleSheet("font-size: 18px;")
+            icon_label.setStyleSheet("font-size: 16px;")
             layout.addWidget(icon_label)
 
         text_layout = QVBoxLayout()
         text_layout.setSpacing(2)
 
         main_label = QLabel(main_text)
-        main_label.setStyleSheet(
-            "color: #1e40af; font-size: 16px; font-weight: bold;"
-        )
+        main_label.setObjectName("sectionMain")
         text_layout.addWidget(main_label)
 
         if desc:
             desc_label = QLabel(desc)
-            desc_label.setStyleSheet("color: #6b7280; font-size: 12px;")
+            desc_label.setObjectName("sectionDesc")
             text_layout.addWidget(desc_label)
 
         layout.addLayout(text_layout)
         layout.addStretch()
 
-        self.setStyleSheet("""
-            QFrame#sectionTitle {
-                background-color: #eff6ff;
-                border-left: 4px solid #2563eb;
-                border-radius: 4px;
-            }
-        """)
-
 
 class PageTitle(QFrame):
     """页面标题（深色或浅色主题）
 
-    替代 .market-page-title（深色渐变标题卡）。
-
     Usage:
-        title = PageTitle("📈 行情详情终端", theme="dark")
+        title = PageTitle("行情详情终端", theme="dark")
         title = PageTitle("策略回测", "配置参数运行单/多股票回测", theme="light")
     """
 
     def __init__(self, main_text: str, desc: str = "", theme: str = "dark",
                  parent=None):
-        """
-        Args:
-            main_text: 主标题（可含 emoji）
-            desc: 副标题（可选）
-            theme: 'dark' 深色背景白字 / 'light' 浅色背景深字
-        """
         super().__init__(parent)
         self.setObjectName("pageTitle")
 
@@ -112,44 +91,43 @@ class PageTitle(QFrame):
             layout.addWidget(desc_label)
 
         if theme == "dark":
-            self.setStyleSheet("""
-                QFrame#pageTitle {
-                    background-color: #1e3a8a;
+            self.setStyleSheet(f"""
+                QFrame#pageTitle {{
+                    background-color: {tokens.PRIMARY_HOVER};
                     border-radius: 10px;
-                }
-                QLabel#pageTitleMain {
+                }}
+                QLabel#pageTitleMain {{
                     color: #ffffff;
                     font-size: 20px;
                     font-weight: bold;
-                }
-                QLabel#pageTitleDesc {
-                    color: #bfdbfe;
+                }}
+                QLabel#pageTitleDesc {{
+                    color: {tokens.PRIMARY_100};
                     font-size: 13px;
-                }
+                }}
             """)
         else:
-            self.setStyleSheet("""
-                QFrame#pageTitle {
-                    background-color: #f0f9ff;
-                    border: 1px solid #bae6fd;
+            self.setStyleSheet(f"""
+                QFrame#pageTitle {{
+                    background-color: {tokens.PRIMARY_50};
+                    border: 1px solid {tokens.PRIMARY_100};
                     border-radius: 10px;
-                }
-                QLabel#pageTitleMain {
-                    color: #0c4a6e;
+                }}
+                QLabel#pageTitleMain {{
+                    color: {tokens.PRIMARY_PRESSED};
                     font-size: 20px;
                     font-weight: bold;
-                }
-                QLabel#pageTitleDesc {
-                    color: #0369a1;
+                }}
+                QLabel#pageTitleDesc {{
+                    color: {tokens.PRIMARY_HOVER};
                     font-size: 13px;
-                }
+                }}
             """)
 
 
 class PageHero(QFrame):
     """顶部产品头（大卡片 + 徽章列表）
 
-    替代 render_app_hero 的 .app-hero 结构。
     QSS 用纯色替代渐变。
 
     Usage:
@@ -171,15 +149,11 @@ class PageHero(QFrame):
 
         title_label = QLabel(title)
         title_label.setObjectName("heroTitle")
-        title_label.setStyleSheet(
-            "color: #ffffff; font-size: 22px; font-weight: bold;"
-        )
         layout.addWidget(title_label)
 
         if subtitle:
             sub_label = QLabel(subtitle)
             sub_label.setObjectName("heroSubtitle")
-            sub_label.setStyleSheet("color: #bfdbfe; font-size: 13px;")
             layout.addWidget(sub_label)
 
         if badges:
@@ -197,10 +171,3 @@ class PageHero(QFrame):
                 badge_layout.addWidget(badge)
             badge_layout.addStretch()
             layout.addLayout(badge_layout)
-
-        self.setStyleSheet("""
-            QFrame#pageHero {
-                background-color: #1d4ed8;
-                border-radius: 12px;
-            }
-        """)

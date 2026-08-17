@@ -264,7 +264,7 @@ class TestCheckableTableView:
     def test_checkbox_column_width(self):
         table = self._make_table()
         header = table.horizontalHeader()
-        assert header.sectionSize(0) == 40  # Checkbox 列宽固定 40
+        assert header.sectionSize(0) == 44  # v3.0：Checkbox 列宽固定 44
 
 
 class TestAddStockDialog:

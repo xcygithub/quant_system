@@ -6,19 +6,21 @@ MetricCard 指标卡片 — 替代 st.metric（30处）
 - delta 可承载 emoji icon（📈📊⚖️📉🌊）或文本（"+2.3%"）
 - 支持涨跌色（涨红跌绿，中国股市惯例）
 
-设计依据：web 屄 st.metric 用法：
-- label 全中文（"总收益率""夏普比率""最大回撤"等）
-- value 通过 f-string 预格式化（百分比/浮点/千分位）
-- delta 多为 emoji 而非数值涨跌，本身未用 delta_color
+v3.0（UI 优化 Phase 2）：
+- 删除内置 Tailwind 色板与内联样式，色值统一从 styles/tokens.py 取
+- 数值字号 24px（FONT_METRIC），与页面标题 H1(20px) 拉开层级
+- 外观由 theme.qss 的 #metricCard/#metricLabel/#metricValue/#metricDelta 控制
 """
-from PySide6.QtWidgets import QFrame, QLabel, QVBoxLayout, QHBoxLayout
+from PySide6.QtWidgets import QFrame, QLabel, QVBoxLayout, QHBoxLayout, QSizePolicy
 from PySide6.QtCore import Qt
 
+from desktop.styles.tokens import UP, DOWN, TEXT_3
 
-# ===== 颜色常量 =====
-COLOR_UP = "#dc2626"      # 红色 - 涨
-COLOR_DOWN = "#16a34a"    # 绿色 - 跌
-COLOR_NEUTRAL = "#6b7280" # 灰色 - 中性
+
+# ===== 颜色常量（从 tokens 取，保留旧名兼容外部引用）=====
+COLOR_UP = UP           # 红色 - 涨
+COLOR_DOWN = DOWN       # 绿色 - 跌
+COLOR_NEUTRAL = TEXT_3  # 灰色 - 中性
 
 
 class MetricCard(QFrame):
@@ -46,6 +48,7 @@ class MetricCard(QFrame):
                  delta_color: str = "auto", parent=None):
         super().__init__(parent)
         self.setObjectName("metricCard")
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 12, 16, 12)
@@ -69,8 +72,6 @@ class MetricCard(QFrame):
             self._set_delta_color(delta, delta_color)
             layout.addWidget(self._delta_label)
 
-        self.setStyleSheet(self._default_style())
-
     def _set_delta_color(self, text: str, mode: str):
         if mode == 'none' or self._delta_label is None:
             return
@@ -85,11 +86,9 @@ class MetricCard(QFrame):
             color = self._auto_color(text)
 
         if color:
-            self._delta_label.setStyleSheet(
-                f"color: {color}; font-size: 16px; font-weight: bold;"
-            )
+            self._delta_label.setStyleSheet(f"color: {color};")
         else:
-            self._delta_label.setStyleSheet("font-size: 16px;")
+            self._delta_label.setStyleSheet("")
 
     @staticmethod
     def _auto_color(text: str) -> str:
@@ -108,25 +107,6 @@ class MetricCard(QFrame):
             return COLOR_DOWN
         # 纯 emoji 或无方向：不着色
         return None
-
-    @staticmethod
-    def _default_style() -> str:
-        return """
-            QFrame#metricCard {
-                background-color: #ffffff;
-                border: 1px solid #e5e7eb;
-                border-radius: 8px;
-            }
-            QLabel#metricLabel {
-                color: #6b7280;
-                font-size: 12px;
-            }
-            QLabel#metricValue {
-                color: #111827;
-                font-size: 22px;
-                font-weight: bold;
-            }
-        """
 
     def set_label(self, text: str):
         self._label_label.setText(text)
@@ -159,7 +139,7 @@ class MetricCard(QFrame):
 
 
 def create_metric_row(metrics, parent=None) -> QHBoxLayout:
-    """创建一行指标卡布局
+    """创建一行指标卡布局（卡片等宽分布）
 
     Args:
         metrics: [(label, value, delta), ...] 或 [(label, value), ...]
@@ -167,7 +147,7 @@ def create_metric_row(metrics, parent=None) -> QHBoxLayout:
         parent: 父控件
 
     Returns:
-        QHBoxLayout（已添加所有卡片）
+        QHBoxLayout（已添加所有卡片，等宽）
 
     Usage:
         row = create_metric_row([
@@ -184,6 +164,5 @@ def create_metric_row(metrics, parent=None) -> QHBoxLayout:
         value = item[1] if len(item) > 1 else ""
         delta = item[2] if len(item) > 2 else ""
         card = MetricCard(label, value, delta)
-        layout.addWidget(card)
-    layout.addStretch()
+        layout.addWidget(card, 1)  # 等宽
     return layout

@@ -8,6 +8,8 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QFrame, QLabel, QHBoxLayout
 )
 
+from desktop.styles import tokens
+
 
 class BasePage(QWidget):
     """
@@ -17,6 +19,8 @@ class BasePage(QWidget):
     ┌──────────────────────────┐
     │  页面标题 (pageTitle)     │
     │  └ 副标题                │
+    ├──────────────────────────┤
+    │  分隔线 (titleDivider)    │
     ├──────────────────────────┤
     │                          │
     │  内容区域 (子类实现)      │
@@ -33,16 +37,14 @@ class BasePage(QWidget):
     def _setup_ui(self):
         """构建页面基础布局
 
-        UI 重设计后标题区：
-        - H1 样式左对齐，无背景色
-        - 副标题紧跟主标题下方
-        - 右侧可放全局操作入口（由子类通过 _build_title_actions 添加）
+        v3.0：边距/间距全部取 tokens（PAGE_MARGIN / SECTION_GAP），
+        标题区下方加 1px 分隔线。
         """
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(24, 16, 24, 16)  # --space-6
-        layout.setSpacing(12)
+        layout.setContentsMargins(*tokens.PAGE_MARGIN)
+        layout.setSpacing(tokens.SECTION_GAP)
 
-        # 页面标题栏（新设计：H1 样式，无深蓝色背景）
+        # 页面标题栏（H1 样式，无背景色）
         if self._title:
             title_frame = QFrame()
             title_frame.setObjectName("pageTitle")
@@ -74,6 +76,11 @@ class BasePage(QWidget):
             title_layout.addWidget(self._title_actions)
 
             layout.addWidget(title_frame)
+
+            # 标题区下方分隔线
+            divider = QFrame()
+            divider.setObjectName("titleDivider")
+            layout.addWidget(divider)
 
         # 内容区域（子类重写）
         self._content_container = QWidget()

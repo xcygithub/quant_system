@@ -28,8 +28,9 @@ from PySide6.QtWidgets import (
     QScrollArea, QMenu, QToolButton, QSizePolicy, QAbstractItemView,
     QHeaderView, QStyledItemDelegate, QStyleOptionViewItem, QStyle,
     QMessageBox, QItemDelegate, QDialog, QDialogButtonBox,
+    QStyleOptionButton,
 )
-from PySide6.QtCore import Qt, Signal, QTimer, QSortFilterProxyModel, QModelIndex
+from PySide6.QtCore import Qt, Signal, QTimer, QSortFilterProxyModel, QModelIndex, QRect
 from PySide6.QtGui import QColor, QBrush, QAction, QPainter, QPen
 
 logger = logging.getLogger(__name__)
@@ -40,9 +41,12 @@ from desktop.widgets.pandas_table import PandasTableView, make_change_color_rule
 from desktop.widgets.metric_card import MetricCard
 from desktop.widgets.message_bar import MessageBar, MessageHelper
 from desktop.widgets.chart_container import ChartContainer
+from desktop.widgets.section_card import SectionCard
+from desktop.widgets.empty_state import EmptyState
 from desktop.widgets.async_worker import AsyncWorker, run_with_progress
 from desktop.models.managers import Managers
 from desktop.models.app_state import AppState
+from desktop.styles import tokens
 
 from data.data_provider import CacheOnlyProvider
 
@@ -227,8 +231,59 @@ class CheckableTableModel(QSortFilterProxyModel):
         return False
 
 
+# ============ 带全选 Checkbox 的表头 ============
+
+class CheckableHeaderView(QHeaderView):
+    """第 0 列带全选 Checkbox 的表头（v3.0：全选移入表头，替代孤悬 Checkbox）
+
+    Signals:
+        toggled(bool): 全选状态切换（True=全选，False=全不选）
+    """
+    toggled = Signal(bool)
+
+    def __init__(self, parent=None):
+        super().__init__(Qt.Horizontal, parent)
+        self._state = Qt.Unchecked  # Unchecked / PartiallyChecked / Checked
+
+    def set_check_state(self, state):
+        if self._state != state:
+            self._state = state
+            self.updateSection(0)
+
+    def check_state(self):
+        return self._state
+
+    def paintSection(self, painter, rect, logicalIndex):
+        super().paintSection(painter, rect, logicalIndex)
+        if logicalIndex != 0:
+            return
+        opt = QStyleOptionButton()
+        size = 16
+        x = rect.x() + (rect.width() - size) // 2
+        y = rect.y() + (rect.height() - size) // 2
+        opt.rect = QRect(x, y, size, size)
+        opt.state = QStyle.State_Enabled
+        if self._state == Qt.Checked:
+            opt.state |= QStyle.State_On
+        elif self._state == Qt.PartiallyChecked:
+            opt.state |= QStyle.State_NoChange
+        else:
+            opt.state |= QStyle.State_Off
+        self.style().drawControl(QStyle.CE_CheckBox, opt, painter, self)
+
+    def mousePressEvent(self, event):
+        if self.logicalIndexAt(event.pos()) == 0:
+            new_checked = self._state != Qt.Checked
+            self.set_check_state(Qt.Checked if new_checked else Qt.Unchecked)
+            self.toggled.emit(new_checked)
+            return
+        super().mousePressEvent(event)
+
+
 class CheckableTableView(PandasTableView):
     """带 Checkbox 列的表格视图
+
+    v3.0：全选 Checkbox 移入表头第 0 列（CheckableHeaderView）。
 
     Signals:
         selection_changed(int): 选中行数变化
@@ -238,37 +293,67 @@ class CheckableTableView(PandasTableView):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._proxy_model = None
+        self._checkable_header = CheckableHeaderView(self)
+        self.setHorizontalHeader(self._checkable_header)
+        self._checkable_header.toggled.connect(self._on_header_toggled)
+
+    def _on_header_toggled(self, checked: bool):
+        if checked:
+            self.select_all()
+        else:
+            self.deselect_all()
+
+    def sync_header_state(self):
+        """根据当前选中数同步表头 Checkbox 三态"""
+        if not self._proxy_model:
+            return
+        count = self._proxy_model.checked_count()
+        total = self._proxy_model.rowCount()
+        if count == 0:
+            self._checkable_header.set_check_state(Qt.Unchecked)
+        elif total > 0 and count == total:
+            self._checkable_header.set_check_state(Qt.Checked)
+        else:
+            self._checkable_header.set_check_state(Qt.PartiallyChecked)
 
     def set_checkable_data(self, df, formatters=None, color_rules=None,
                            auto_resize=False):
-        """设置数据（带 Checkbox 列）"""
+        """设置数据（带 Checkbox 列）
+
+        v3.0 列宽语义化：代码列加宽不截断，名称列弹性拉伸，
+        数字列固定宽右对齐（等宽数字字体由模型 FontRole 提供）。
+        """
         from desktop.widgets.pandas_table import PandasTableModel
         source_model = PandasTableModel(df, formatters, color_rules)
         self._proxy_model = CheckableTableModel(source_model, self)
         self.setModel(self._proxy_model)
 
-        # Checkbox 列宽
         header = self.horizontalHeader()
-        header.resizeSection(0, 40)
+        header.setStretchLastSection(False)
+        header.resizeSection(0, 44)
         header.setSectionResizeMode(0, QHeaderView.Fixed)
 
-        # 设置列宽
         _COL_WIDTHS = {
-            "代码": 100, "名称": 130, "最新价": 90,
-            "涨跌幅(%)": 90, "成交量(万)": 110, "分组": 80,
+            "代码": 110, "最新价": 100,
+            "涨跌幅(%)": 100, "成交量(万)": 120, "分组": 90,
         }
         for col_idx in range(1, self._proxy_model.columnCount()):
             col_name = self._proxy_model.headerData(col_idx, Qt.Horizontal)
-            w = _COL_WIDTHS.get(col_name, 80)
-            header.resizeSection(col_idx, w)
+            if col_name == "名称":
+                header.setSectionResizeMode(col_idx, QHeaderView.Stretch)
+            else:
+                header.setSectionResizeMode(col_idx, QHeaderView.Interactive)
+                header.resizeSection(col_idx, _COL_WIDTHS.get(col_name, 90))
 
         self.setSelectionMode(QAbstractItemView.NoSelection)
         self.setSelectionBehavior(QAbstractItemView.SelectItems)
+        self.sync_header_state()
 
     def _on_check_clicked(self, index):
         """点击 Checkbox 列时切换选中状态"""
         if index.column() == 0 and self._proxy_model:
             self._proxy_model.toggle_check(index.row())
+            self.sync_header_state()
             self.selection_changed.emit(self._proxy_model.checked_count())
 
     def mousePressEvent(self, event):
@@ -300,11 +385,13 @@ class CheckableTableView(PandasTableView):
     def select_all(self):
         if self._proxy_model:
             self._proxy_model.set_all_checked(True)
+            self.sync_header_state()
             self.selection_changed.emit(self._proxy_model.checked_count())
 
     def deselect_all(self):
         if self._proxy_model:
             self._proxy_model.set_all_checked(False)
+            self.sync_header_state()
             self.selection_changed.emit(0)
 
     def row_double_clicked_signal(self, row_idx):
@@ -366,8 +453,8 @@ class WatchlistPage(BasePage):
         self._view_container = QWidget()
         self._view_container.setObjectName("watchlistViewContainer")
         self._view_layout = QVBoxLayout(self._view_container)
-        self._view_layout.setContentsMargins(24, 16, 24, 16)  # --space-6
-        self._view_layout.setSpacing(12)
+        self._view_layout.setContentsMargins(0, 0, 0, 0)  # 边距由 BasePage 统一
+        self._view_layout.setSpacing(tokens.SECTION_GAP)
         self._scroll.setWidget(self._view_container)
 
         self._render_list()
@@ -397,13 +484,13 @@ class WatchlistPage(BasePage):
         self._view_mode = "list"
         self._clear_view()
 
-        # --- 工具栏（新设计） ---
+        # --- 卡片1：筛选工具区（合并原工具栏 + 排序行，v3.0） ---
         # 设计原则：同样的功能只要一个地方实现
-        # - 【刷新】= 唯一从 Baostock 在线拉取行情的入口（替代原"批量在线刷新"）
-        # - 底部【导出回测】= 唯一标记用于回测的入口（无勾选导全组，有勾选导勾选）
-        # - 【自动刷新】已删除（定时重复网络请求容易制造静默流量，且与手动刷新重叠）
+        # - 【刷新】= 唯一从 Baostock 在线拉取行情的入口
+        # - 底部【导出回测】= 唯一标记用于回测的入口
+        filter_card = SectionCard()
         toolbar = QHBoxLayout()
-        toolbar.setSpacing(8)
+        toolbar.setSpacing(tokens.CONTROL_GAP)
 
         # 刷新按钮（唯一刷新入口，走 Baostock）
         self._refresh_btn = QPushButton("刷新")
@@ -424,7 +511,6 @@ class WatchlistPage(BasePage):
         self._search_edit.setObjectName("searchEdit")
         self._search_edit.setPlaceholderText("搜索股票代码/名称...")
         self._search_edit.setText(self._keyword)
-        self._search_edit.setMaximumWidth(280)
         self._search_edit.textChanged.connect(self._on_search_text_changed)
         toolbar.addWidget(self._search_edit)
 
@@ -439,6 +525,14 @@ class WatchlistPage(BasePage):
         self._group_combo.setMinimumWidth(100)
         toolbar.addWidget(self._group_combo)
 
+        # 排序下拉（并入筛选行）
+        sort_combo = QComboBox()
+        sort_combo.addItems(SORT_CHOICES)
+        sort_combo.setCurrentText(self._sort_by)
+        sort_combo.currentTextChanged.connect(self._on_sort_changed)
+        sort_combo.setMinimumWidth(140)
+        toolbar.addWidget(sort_combo)
+
         toolbar.addStretch(1)
 
         # 添加股票按钮
@@ -447,8 +541,9 @@ class WatchlistPage(BasePage):
         add_btn.clicked.connect(self._show_add_stock_dialog)
         toolbar.addWidget(add_btn)
 
-        # 更多操作下拉（仅保留低频操作；行情刷新和回测导出已在工具栏/底部栏实现单一入口）
+        # 更多操作下拉（幽灵按钮，低频操作收纳）
         more_btn = QToolButton()
+        more_btn.setObjectName("ghostBtn")
         more_btn.setText("更多")
         more_btn.setPopupMode(QToolButton.InstantPopup)
         more_btn.setMinimumWidth(72)
@@ -460,72 +555,62 @@ class WatchlistPage(BasePage):
         more_btn.setMenu(more_menu)
         toolbar.addWidget(more_btn)
 
-        self._view_layout.addLayout(toolbar)
+        filter_card.content_layout.addLayout(toolbar)
+        self._view_layout.addWidget(filter_card)
 
-        # --- 排序行 ---
-        sort_bar = QHBoxLayout()
-        sort_bar.setSpacing(8)
+        # --- 卡片2：行情统计区（等宽指标卡） ---
+        self._overview_container = QWidget()
+        self._overview_container.setLayout(QHBoxLayout())
+        self._overview_container.layout().setContentsMargins(0, 0, 0, 0)
+        self._overview_container.layout().setSpacing(tokens.SPACE_3)
+        self._view_layout.addWidget(self._overview_container)
 
-        sort_label = QLabel("排序:")
-        sort_label.setStyleSheet("color: #6C757D; font-size: 12px;")
-        sort_bar.addWidget(sort_label)
+        # --- 卡片3：数据区（表格卡片，撑满剩余高度） ---
+        self._table_card = SectionCard(margins=8)
+        self._table_container = QWidget()
+        self._table_container.setLayout(QVBoxLayout())
+        self._table_container.layout().setContentsMargins(0, 0, 0, 0)
+        self._table_container.layout().setSpacing(tokens.CONTROL_GAP)
+        self._table_card.content_layout.addWidget(self._table_container, 1)
 
-        sort_combo = QComboBox()
-        sort_combo.addItems(SORT_CHOICES)
-        sort_combo.setCurrentText(self._sort_by)
-        sort_combo.currentTextChanged.connect(self._on_sort_changed)
-        sort_bar.addWidget(sort_combo)
+        # 表格卡片底部工具行：紧凑分页 + 每页大小 + 总数
+        self._bottom_bar = QHBoxLayout()
+        self._bottom_bar.setContentsMargins(8, 0, 8, 0)
+        self._bottom_bar.setSpacing(tokens.CONTROL_GAP)
 
-        size_label = QLabel("每页:")
-        size_label.setStyleSheet("color: #6C757D; font-size: 12px;")
-        sort_bar.addWidget(size_label)
+        self._pagination_container = QWidget()
+        self._pagination_container.setLayout(QHBoxLayout())
+        self._pagination_container.layout().setContentsMargins(0, 0, 0, 0)
+        self._pagination_container.layout().setSpacing(tokens.SPACE_1)
+        self._bottom_bar.addWidget(self._pagination_container)
+
+        self._bottom_bar.addStretch(1)
+
+        size_label = QLabel("每页")
+        size_label.setObjectName("captionLabel")
+        self._bottom_bar.addWidget(size_label)
 
         size_combo = QComboBox()
         for s in PAGE_SIZES:
             size_combo.addItem(str(s))
         size_combo.setCurrentText(str(self._page_size))
         size_combo.currentTextChanged.connect(self._on_page_size_changed)
-        sort_bar.addWidget(size_combo)
+        size_combo.setMinimumWidth(64)
+        self._bottom_bar.addWidget(size_combo)
 
-        sort_bar.addStretch(1)
+        self._total_label = QLabel("")
+        self._total_label.setObjectName("captionLabel")
+        self._bottom_bar.addWidget(self._total_label)
 
-        # 全选 Checkbox
-        self._select_all_cb = QCheckBox("全选")
-        self._select_all_cb.stateChanged.connect(self._on_select_all_changed)
-        sort_bar.addWidget(self._select_all_cb)
+        self._table_card.content_layout.addLayout(self._bottom_bar)
+        self._view_layout.addWidget(self._table_card, 1)
 
-        self._view_layout.addLayout(sort_bar)
-
-        # --- 行情总览行 ---
-        self._overview_container = QWidget()
-        self._overview_container.setLayout(QHBoxLayout())
-        self._overview_container.layout().setSpacing(12)
-        self._view_layout.addWidget(self._overview_container)
-
-        # --- 表格容器 ---
-        self._table_container = QWidget()
-        self._table_container.setLayout(QVBoxLayout())
-        self._table_container.layout().setContentsMargins(0, 0, 0, 0)
-        self._table_container.layout().setSpacing(0)
-        self._view_layout.addWidget(self._table_container, 1)
-
-        # --- 底部：分页 + 批量操作浮栏 ---
-        self._bottom_bar = QHBoxLayout()
-        self._bottom_bar.setSpacing(12)
-
-        # 分页区域
-        self._pagination_container = QWidget()
-        self._pagination_container.setLayout(QHBoxLayout())
-        self._pagination_container.layout().setContentsMargins(0, 0, 0, 0)
-        self._pagination_container.layout().setSpacing(8)
-        self._bottom_bar.addWidget(self._pagination_container, 2)
-
-        # 批量操作浮栏（选中股票后显示）
+        # --- 批量操作浮栏（选中股票后浮出，独立于卡片） ---
         self._batch_action_bar = QFrame()
         self._batch_action_bar.setObjectName("batchActionBar")
         batch_layout = QHBoxLayout(self._batch_action_bar)
         batch_layout.setContentsMargins(12, 8, 12, 8)
-        batch_layout.setSpacing(8)
+        batch_layout.setSpacing(tokens.CONTROL_GAP)
 
         self._batch_count_label = QLabel("已选 0 项")
         self._batch_count_label.setObjectName("batchCountLabel")
@@ -540,10 +625,10 @@ class WatchlistPage(BasePage):
         batch_export_btn.clicked.connect(self._on_batch_export)
         batch_layout.addWidget(batch_export_btn)
 
-        self._batch_action_bar.setVisible(False)
-        self._bottom_bar.addWidget(self._batch_action_bar, 3)
+        batch_layout.addStretch(1)
 
-        self._view_layout.addLayout(self._bottom_bar)
+        self._batch_action_bar.setVisible(False)
+        self._view_layout.addWidget(self._batch_action_bar)
 
         self._schedule_quotes_load()
 
@@ -668,8 +753,7 @@ class WatchlistPage(BasePage):
             MetricCard("下跌", str(down), delta_color="down"),
             MetricCard("平盘", str(flat), delta_color="neutral"),
         ]:
-            layout.addWidget(c)
-        layout.addStretch(1)
+            layout.addWidget(c, 1)  # v3.0：等宽分布
 
     def _render_table_section(self):
         try:
@@ -680,12 +764,14 @@ class WatchlistPage(BasePage):
 
         rows = self._all_rows
         if not rows:
-            empty_label = QLabel("暂无匹配的自选股，请调整筛选条件。")
-            empty_label.setAlignment(Qt.AlignCenter)
-            empty_label.setStyleSheet(
-                "color: #6C757D; font-size: 14px; padding: 40px;"
+            # v3.0：统一空状态组件（替代单行灰字）
+            empty = EmptyState(
+                icon="🔍",
+                title="暂无匹配的自选股",
+                desc="请调整筛选条件，或添加新的自选股",
             )
-            layout.addWidget(empty_label)
+            empty.set_action("+ 添加股票", self._show_add_stock_dialog)
+            layout.addWidget(empty, 1)
             self._render_pagination(0, 1)
             return
 
@@ -711,7 +797,7 @@ class WatchlistPage(BasePage):
         table.doubleClicked.connect(self._on_row_double_clicked)
         self._table = table
 
-        table.setMinimumHeight(380)
+        # v3.0：删除硬编码 minHeight，表格卡片 stretch 填满剩余高度
         layout.addWidget(table, 1)
 
         # 数据缺失提示
@@ -721,67 +807,56 @@ class WatchlistPage(BasePage):
                 f"当前页 {len(page_rows)} 只股票中 {missing_in_page} 只"
                 f"行情数据缺失。请点击「刷新」通过 Baostock 在线获取。"
             )
+            hint.setObjectName("hintLabel")
             hint.setWordWrap(True)
-            hint.setStyleSheet(
-                "QLabel { background-color: #FFF7ED; color: #92400E; "
-                "border: 1px solid #FCD34D; border-radius: 4px; "
-                "padding: 8px 12px; font-size: 13px; }"
-            )
             layout.addWidget(hint)
 
         # 分页
         self._render_pagination(total, pages)
 
     def _render_pagination(self, total: int, pages: int):
-        """渲染分页控件"""
+        """渲染紧凑分页控件（‹ 页码 › 图标按钮式，v3.0）"""
         try:
             layout = self._pagination_container.layout()
         except RuntimeError:
             return
         self._clear_layout(layout)
 
-        prev_btn = QPushButton("上一页")
+        prev_btn = QPushButton("‹")
+        prev_btn.setObjectName("pageNavBtn")
+        prev_btn.setToolTip("上一页")
         prev_btn.setEnabled(self._page > 1)
         prev_btn.clicked.connect(self._on_prev_page)
         layout.addWidget(prev_btn)
 
-        page_label = QLabel(f"第 {self._page}/{pages} 页 · 共 {total} 只")
+        page_label = QLabel(f"{self._page} / {pages}")
+        page_label.setObjectName("pageInfoLabel")
         page_label.setAlignment(Qt.AlignCenter)
-        page_label.setStyleSheet("color: #6C757D; font-size: 12px; padding: 0 12px;")
         layout.addWidget(page_label)
 
-        next_btn = QPushButton("下一页")
+        next_btn = QPushButton("›")
+        next_btn.setObjectName("pageNavBtn")
+        next_btn.setToolTip("下一页")
         next_btn.setEnabled(self._page < pages)
         next_btn.clicked.connect(self._on_next_page)
         layout.addWidget(next_btn)
 
+        # 底部总数标签
+        try:
+            self._total_label.setText(f"共 {total} 只")
+        except RuntimeError:
+            pass
+
     # ============ 表格选中态 ============
 
     def _on_table_selection_changed(self, count: int):
-        """表格 Checkbox 选中变化时更新底部批量操作栏"""
+        """表格 Checkbox 选中变化时更新底部批量操作栏 + 表头全选三态"""
         self._batch_count_label.setText(f"已选 {count} 项")
         self._batch_action_bar.setVisible(count > 0)
 
-        # 同步全选 Checkbox 状态
-        if hasattr(self, '_select_all_cb'):
-            self._select_all_cb.blockSignals(True)
-            total = len(self._page_rows) if self._page_rows else 0
-            if count == 0:
-                self._select_all_cb.setCheckState(Qt.Unchecked)
-            elif count == total and total > 0:
-                self._select_all_cb.setCheckState(Qt.Checked)
-            else:
-                self._select_all_cb.setCheckState(Qt.PartiallyChecked)
-            self._select_all_cb.blockSignals(False)
-
-    def _on_select_all_changed(self, state):
-        """全选 Checkbox 状态变化"""
-        if not hasattr(self, '_table'):
-            return
-        if state == Qt.Checked:
-            self._table.select_all()
-        else:
-            self._table.deselect_all()
+        # v3.0：同步表头全选 Checkbox 状态（替代孤悬「全选」）
+        if hasattr(self, '_table'):
+            self._table.sync_header_state()
 
     def _on_row_double_clicked(self, index):
         """双击行跳转详情"""
@@ -1007,7 +1082,9 @@ class WatchlistPage(BasePage):
         tb.addStretch(1)
         self._view_layout.addLayout(tb)
 
-        self._view_layout.addWidget(QLabel(f"{symbol} 行情详情"))
+        detail_title = QLabel(f"{symbol} 行情详情")
+        detail_title.setObjectName("stockSymbol")
+        self._view_layout.addWidget(detail_title)
 
         # 指标卡行
         self._detail_metric_container = QWidget()
@@ -1093,8 +1170,7 @@ class WatchlistPage(BasePage):
             MetricCard("成交量", f"{volume / 10000:.0f}万"),
             MetricCard("成交额", f"{amount / 100000000:.2f}亿"),
         ]:
-            layout.addWidget(c)
-        layout.addStretch(1)
+            layout.addWidget(c, 1)  # v3.0：等宽分布
 
     def _render_detail_chart(self):
         df = self._detail_df
@@ -1220,7 +1296,7 @@ class AddStockDialog(QDialog):
     def _on_accept(self):
         symbol = self._symbol_edit.text().strip()
         if not symbol:
-            self._symbol_edit.setStyleSheet("border: 1px solid #E24B4A;")
+            self._symbol_edit.setStyleSheet(f"border: 1px solid {tokens.ERROR};")
             return
         self._result_data = self.get_stock_data()
         self.accept()

@@ -41,11 +41,7 @@ class ChartContainer(QFrame):
 
         if title:
             title_label = QLabel(title)
-            title_label.setStyleSheet(
-                "color: #1f2937; font-size: 14px; font-weight: bold; "
-                "padding: 8px 12px; background-color: #f9fafb; "
-                "border-bottom: 1px solid #e5e7eb;"
-            )
+            title_label.setObjectName("chartTitle")  # 样式见 theme.qss
             outer.addWidget(title_label)
 
         # 内容槽：装 pyqtgraph widget / WebEngine view / 占位 QLabel
@@ -63,16 +59,7 @@ class ChartContainer(QFrame):
         # WebEngine view 懒加载（仅 set_figure 路径用）
         self._web_view = None
 
-        self.setStyleSheet("""
-            QFrame#chartContainer {
-                border: 1px solid #e5e7eb;
-                border-radius: 8px;
-                background-color: #ffffff;
-            }
-            QWidget#chartContentSlot {
-                background-color: #ffffff;
-            }
-        """)
+        # 外观由 theme.qss 的 #chartContainer / #chartContentSlot 承载（v3.0）
         self.setMinimumHeight(300)
 
     # ========== 内部：替换内容槽中的 widget ==========
@@ -177,16 +164,17 @@ class ChartContainer(QFrame):
         # 切到 pyqtgraph 路径后，message 用 QLabel 占位；不再走 WebEngine
         self._release_web_view()
 
+        from desktop.styles import tokens
         colors = {
-            "info": "#6b7280",
+            "info": tokens.TEXT_3,
             "warning": "#d97706",
-            "error": "#dc2626",
+            "error": tokens.UP,
         }
         color = colors.get(level, colors["info"])
         label = QLabel(str(text))
         label.setAlignment(Qt.AlignCenter)
         label.setStyleSheet(
-            f"color: {color}; padding: 40px; background-color: #f9fafb; "
+            f"color: {color}; padding: 40px; background-color: #FFFFFF; "
             "font-size: 14px;"
         )
         label.setWordWrap(True)
