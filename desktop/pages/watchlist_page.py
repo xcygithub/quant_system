@@ -500,12 +500,6 @@ class WatchlistPage(BasePage):
         self._refresh_btn.setMinimumWidth(72)
         toolbar.addWidget(self._refresh_btn)
 
-        # 分隔线
-        sep1 = QFrame()
-        sep1.setObjectName("toolbarSeparator")
-        sep1.setFrameShape(QFrame.VLine)
-        toolbar.addWidget(sep1)
-
         # 搜索框（实时筛选）
         self._search_edit = QLineEdit()
         self._search_edit.setObjectName("searchEdit")
@@ -515,6 +509,9 @@ class WatchlistPage(BasePage):
         toolbar.addWidget(self._search_edit)
 
         # 分组筛选下拉
+        group_label = QLabel("分组")
+        group_label.setObjectName("toolbarFieldLabel")
+        toolbar.addWidget(group_label)
         self._group_combo = QComboBox()
         self._group_combo.addItem("全部")
         self._group_combo.addItems(self._wl.get_groups())
@@ -526,6 +523,9 @@ class WatchlistPage(BasePage):
         toolbar.addWidget(self._group_combo)
 
         # 排序下拉（并入筛选行）
+        sort_label = QLabel("排序")
+        sort_label.setObjectName("toolbarFieldLabel")
+        toolbar.addWidget(sort_label)
         sort_combo = QComboBox()
         sort_combo.addItems(SORT_CHOICES)
         sort_combo.setCurrentText(self._sort_by)
@@ -749,9 +749,9 @@ class WatchlistPage(BasePage):
 
         for c in [
             MetricCard("股票总数", str(len(rows))),
-            MetricCard("上涨", str(up), delta_color="up"),
-            MetricCard("下跌", str(down), delta_color="down"),
-            MetricCard("平盘", str(flat), delta_color="neutral"),
+            MetricCard("上涨", str(up), value_color="up"),
+            MetricCard("下跌", str(down), value_color="down"),
+            MetricCard("平盘", str(flat), value_color="neutral"),
         ]:
             layout.addWidget(c, 1)  # v3.0：等宽分布
 
@@ -1092,7 +1092,7 @@ class WatchlistPage(BasePage):
         self._detail_metric_container.layout().setSpacing(12)
         self._view_layout.addWidget(self._detail_metric_container)
 
-        # 周期选择
+        # 周期选择 + 缩放按钮（K线图已禁用滚轮缩放，改用按钮控制）
         period_bar = QHBoxLayout()
         period_combo = QComboBox()
         period_combo.addItems(list(PERIOD_MAP.keys()))
@@ -1102,6 +1102,13 @@ class WatchlistPage(BasePage):
         period_bar.addWidget(QLabel("K线周期"))
         period_bar.addWidget(period_combo)
         period_bar.addStretch(1)
+        self._kline_glw = None
+        zoom_out_btn = QPushButton("－ 缩小")
+        zoom_out_btn.clicked.connect(lambda: self._zoom_kline(1.25))
+        period_bar.addWidget(zoom_out_btn)
+        zoom_in_btn = QPushButton("＋ 放大")
+        zoom_in_btn.clicked.connect(lambda: self._zoom_kline(0.8))
+        period_bar.addWidget(zoom_in_btn)
         self._view_layout.addLayout(period_bar)
 
         # 图表
@@ -1165,8 +1172,8 @@ class WatchlistPage(BasePage):
         amount = float(latest["amount"]) if "amount" in df.columns and pd.notna(latest["amount"]) else 0.0
         for c in [
             MetricCard("最新价", f"{close:.2f}", delta=f"{change:+.2f}", delta_color="up" if change >= 0 else "down"),
-            MetricCard("涨跌额", f"{change:+.2f}", delta_color="up" if change >= 0 else "down"),
-            MetricCard("涨跌幅", f"{change_pct:+.2f}%", delta_color="up" if change >= 0 else "down"),
+            MetricCard("涨跌额", f"{change:+.2f}", value_color="up" if change >= 0 else "down"),
+            MetricCard("涨跌幅", f"{change_pct:+.2f}%", value_color="up" if change >= 0 else "down"),
             MetricCard("成交量", f"{volume / 10000:.0f}万"),
             MetricCard("成交额", f"{amount / 100000000:.2f}亿"),
         ]:
@@ -1180,11 +1187,20 @@ class WatchlistPage(BasePage):
         disp = _resample_kline(df, period) if period != "D" else df.copy()
         try:
             from desktop.charts.kline_chart import build_kline_widget
-            self._chart.set_plot_widget(
-                build_kline_widget(disp, self._detail_symbol, period)
-            )
+            self._kline_glw = build_kline_widget(disp, self._detail_symbol, period)
+            self._chart.set_plot_widget(self._kline_glw)
         except Exception as e:
             self._chart.set_message(f"图表渲染失败: {e}")
+
+    def _zoom_kline(self, factor: float):
+        """K线缩放按钮回调：factor<1 放大，>1 缩小"""
+        if self._kline_glw is None:
+            return
+        try:
+            from desktop.charts.kline_chart import zoom_kline_x
+            zoom_kline_x(self._kline_glw, factor)
+        except (RuntimeError, AttributeError):
+            pass
 
     def _render_detail_table(self, df):
         try:

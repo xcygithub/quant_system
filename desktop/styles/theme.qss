@@ -856,10 +856,10 @@ QPushButton#pageBtn#currentPage {
     border: none;
 }
 
-/* ---------- 工具栏分隔线 ---------- */
-QFrame#toolbarSeparator {
-    background-color: #E9ECEF;
-    max-width: 1px;
-    min-height: 24px;
-    margin: 0 8px;
+/* ---------- 工具栏字段标签（分组/排序等下拉的前置说明） ---------- */
+QLabel#toolbarFieldLabel {
+    color: #6C757D;
+    font-size: 13px;
+    background-color: transparent;
+    padding-left: 4px;
 }

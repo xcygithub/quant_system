@@ -7,11 +7,11 @@ pyqtgraph 0.13 没有内置 CandlestickItem，参考官方 examples 自实现。
 """
 import numpy as np
 from PySide6.QtGui import QPainter, QPicture, QColor, QPen, QBrush
-from PySide6.QtCore import QRectF, QPointF
+from PySide6.QtCore import QRectF, QPointF, Qt
 
 import pyqtgraph as pg
 
-from desktop.charts.theme import COLOR_UP, COLOR_DOWN, COLOR_FLAT
+from desktop.charts.theme import COLOR_UP, COLOR_DOWN, COLOR_FLAT, COLOR_BACKGROUND
 
 
 class CandlestickItem(pg.GraphicsObject):
@@ -47,8 +47,9 @@ class CandlestickItem(pg.GraphicsObject):
             )
 
         p = QPainter(self._picture)
-        # K 线宽度（数据单位），相对 1 个时间格的 60%
-        w = 0.6
+        p.setRenderHint(QPainter.Antialiasing, False)
+        # K 线宽度（数据单位），相对 1 个时间格的 65%
+        w = 0.65
 
         for row in arr:
             t, o, h, l, c = row
@@ -56,20 +57,23 @@ class CandlestickItem(pg.GraphicsObject):
                 continue
 
             if c > o:
-                color = COLOR_UP          # 涨：红实体（空心）
-                pen = QPen(color, 1.0)
-                brush = QBrush(color)
+                color = COLOR_UP
+                hollow = True           # 阳线：红框空心
             elif c < o:
-                color = COLOR_DOWN        # 跌：绿实体（实心）
-                pen = QPen(color, 1.0)
-                brush = QBrush(color)
+                color = COLOR_DOWN
+                hollow = False          # 阴线：绿色实心
             else:
                 color = COLOR_FLAT
-                pen = QPen(color, 1.0)
-                brush = QBrush(color)
+                hollow = True
+
+            # cosmetic pen：恒 1px，不随缩放变粗
+            pen = QPen(color)
+            pen.setWidth(1)
+            pen.setCosmetic(True)
 
             # 1) 影线：从 low 到 high 的竖线
             p.setPen(pen)
+            p.setBrush(Qt.NoBrush)
             p.drawLine(QPointF(t, l), QPointF(t, h))
 
             # 2) 实体：open-close 构成的矩形
@@ -77,8 +81,11 @@ class CandlestickItem(pg.GraphicsObject):
             body_bot = min(o, c)
             body_h = max(body_top - body_bot, w * 0.01)  # 防止 0 高度
             rect = QRectF(t - w / 2, body_bot, w, body_h)
-            p.setBrush(brush)
             p.setPen(pen)
+            if hollow:
+                p.setBrush(QBrush(COLOR_BACKGROUND))   # 空心：白底
+            else:
+                p.setBrush(QBrush(color))              # 实心
             p.drawRect(rect)
 
         p.end()
@@ -123,11 +130,26 @@ class AxisTime(pg.AxisItem):
         self.update()
 
     def tickStrings(self, values, scale, spacing):
+        # 按刻度间距选日期格式：跨度大显示年月，密集时只显月日
+        if spacing >= 250:
+            fmt = lambda s: s[:7]        # YYYY-MM
+        elif spacing >= 40:
+            fmt = lambda s: s[:10]       # YYYY-MM-DD
+        else:
+            fmt = lambda s: s[5:10]      # MM-DD
+
         out = []
+        prev = None
         for v in values:
             i = int(round(v))
             if 0 <= i < len(self._dates):
-                out.append(self._dates[i])
+                s = fmt(self._dates[i])
+                # 连续相同标签去重，避免一排重复文字
+                if s == prev:
+                    s = ""
+                else:
+                    prev = s
+                out.append(s)
             else:
                 out.append("")
         return out

@@ -7,13 +7,14 @@ desktop/charts/theme — pyqtgraph 图表统一配色与样式
 from PySide6.QtGui import QColor, QFont
 
 # ========== 中国股市配色：涨红跌绿 ==========
-COLOR_UP = QColor("#ef4444")          # 涨：红色
-COLOR_DOWN = QColor("#22c55e")        # 跌：绿色
+# 与 theme.qss v2.0 设计系统对齐
+COLOR_UP = QColor("#E24B4A")          # 涨：红色
+COLOR_DOWN = QColor("#639922")        # 跌：绿色
 COLOR_FLAT = QColor("#6b7280")        # 平：灰色
 
 # 信号标注
-COLOR_BUY = QColor("#ef4444")         # 买入：红
-COLOR_SELL = QColor("#22c55e")        # 卖出：绿
+COLOR_BUY = QColor("#E24B4A")         # 买入：红
+COLOR_SELL = QColor("#639922")        # 卖出：绿
 COLOR_HOLD = QColor("#9ca3af")        # 持仓：浅灰
 
 # 曲线 / 数据系列
@@ -41,10 +42,14 @@ COLOR_FOREGROUND = QColor("#1f2937")  # 文字：近黑
 
 # 热力图色阶（绿-灰-红，对应 持仓-空-买入）
 COLOR_HEATMAP_STOPS = [
-    (0.0,  QColor("#22c55e")),    # -1 卖出
+    (0.0,  QColor("#639922")),    # -1 卖出
     (0.5,  QColor("#f3f4f6")),    #  0 空仓
-    (1.0,  QColor("#ef4444")),    #  1 买入
+    (1.0,  QColor("#E24B4A")),    #  1 买入
 ]
+
+# 卡片/提示框
+COLOR_CARD_BORDER = QColor("#D3D1C7")  # 提示卡片边框
+COLOR_TAG_BG = QColor("#444441")       # 轴价位标签底色
 
 
 def apply_plot_style(plot_item, *, show_grid=True):

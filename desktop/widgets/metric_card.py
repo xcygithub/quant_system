@@ -42,10 +42,13 @@ class MetricCard(QFrame):
             - 'down': 绿色（跌）
             - 'neutral': 灰色
             - 'none': 不着色
+        value_color: 数值颜色模式（'up'/'down'/'neutral'/'none'，默认 'none'）
+            用于无 delta 的纯数值卡片（如上涨/下跌家数统计）
     """
 
     def __init__(self, label: str = "", value: str = "", delta: str = "",
-                 delta_color: str = "auto", parent=None):
+                 delta_color: str = "auto", value_color: str = "none",
+                 parent=None):
         super().__init__(parent)
         self.setObjectName("metricCard")
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
@@ -63,6 +66,8 @@ class MetricCard(QFrame):
         self._value_label = QLabel(value)
         self._value_label.setObjectName("metricValue")
         layout.addWidget(self._value_label)
+        if value_color != "none":
+            self.set_value_color(value_color)
 
         # delta（增量/图标）
         self._delta_label = None
@@ -72,18 +77,28 @@ class MetricCard(QFrame):
             self._set_delta_color(delta, delta_color)
             layout.addWidget(self._delta_label)
 
+    @staticmethod
+    def _mode_color(mode: str):
+        """颜色模式 → 色值（'up'/'down'/'neutral'，其余返回 None）"""
+        return {'up': COLOR_UP, 'down': COLOR_DOWN,
+                'neutral': COLOR_NEUTRAL}.get(mode)
+
+    def set_value_color(self, mode: str):
+        """设置数值颜色（'up' 红 / 'down' 绿 / 'neutral' 灰 / 'none' 恢复默认）"""
+        color = self._mode_color(mode)
+        if color:
+            self._value_label.setStyleSheet(f"color: {color};")
+        else:
+            self._value_label.setStyleSheet("")
+
     def _set_delta_color(self, text: str, mode: str):
         if mode == 'none' or self._delta_label is None:
             return
 
-        if mode == 'up':
-            color = COLOR_UP
-        elif mode == 'down':
-            color = COLOR_DOWN
-        elif mode == 'neutral':
-            color = COLOR_NEUTRAL
-        else:  # auto
+        if mode == 'auto':
             color = self._auto_color(text)
+        else:
+            color = self._mode_color(mode)
 
         if color:
             self._delta_label.setStyleSheet(f"color: {color};")

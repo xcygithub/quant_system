@@ -10,7 +10,7 @@ from desktop.widgets.pandas_table import (
     COLOR_UP, COLOR_DOWN, COLOR_FLAT,
 )
 from desktop.widgets.message_bar import MessageBar, MessageHelper
-from desktop.widgets.metric_card import MetricCard, create_metric_row
+from desktop.widgets.metric_card import MetricCard, create_metric_row, COLOR_NEUTRAL
 from desktop.widgets.section_title import SectionTitle, PageTitle, PageHero
 from desktop.widgets.stock_selector import StockSelector, StockPoolSelector
 from desktop.widgets.chart_container import ChartContainer, check_webengine_available
@@ -241,6 +241,33 @@ class TestMetricCard:
         card = MetricCard('A', '1')
         card.set_value('99')
         assert card._value_label.text() == '99'
+
+    def test_value_color_up(self, qapp):
+        """数值着色：上涨→红（涨红跌绿，A股惯例）"""
+        card = MetricCard('上涨', '10', value_color='up')
+        assert COLOR_UP in card._value_label.styleSheet()
+
+    def test_value_color_down(self, qapp):
+        """数值着色：下跌→绿"""
+        card = MetricCard('下跌', '4', value_color='down')
+        assert COLOR_DOWN in card._value_label.styleSheet()
+
+    def test_value_color_neutral(self, qapp):
+        """数值着色：平盘→灰"""
+        card = MetricCard('平盘', '0', value_color='neutral')
+        assert COLOR_NEUTRAL in card._value_label.styleSheet()
+
+    def test_value_color_none_default(self, qapp):
+        """默认不着色"""
+        card = MetricCard('总数', '15')
+        assert card._value_label.styleSheet() == ''
+
+    def test_set_value_color_reset(self, qapp):
+        """set_value_color('none') 恢复默认色"""
+        card = MetricCard('上涨', '10', value_color='up')
+        assert COLOR_UP in card._value_label.styleSheet()
+        card.set_value_color('none')
+        assert card._value_label.styleSheet() == ''
 
 
 # ===== SectionTitle 组件族 =====

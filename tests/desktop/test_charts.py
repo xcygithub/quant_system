@@ -77,7 +77,7 @@ class TestTheme:
         assert COLOR_DOWN.green() > COLOR_DOWN.red(), "跌色应为绿"
 
     def test_qcolor_to_rgba(self):
-        assert qcolor_to_rgba(COLOR_UP) == (239, 68, 68, 255)
+        assert qcolor_to_rgba(COLOR_UP) == (226, 75, 74, 255)
 
     def test_factor_color_cycles(self):
         c0 = factor_color(0)
@@ -115,16 +115,29 @@ class TestCandlestickItem:
 # ========== AxisTime ==========
 
 class TestAxisTime:
-    def test_tick_strings(self, qapp):
+    def test_tick_strings_dense(self, qapp):
+        """密集刻度（spacing<40）显示 MM-DD"""
         dates = ["2024-01-01", "2024-01-02", "2024-01-03"]
         axis = AxisTime(dates)
-        assert axis.tickStrings([0, 1, 2], 1, 1) == dates
+        assert axis.tickStrings([0, 1, 2], 1, 1) == ["01-01", "01-02", "01-03"]
         assert axis.tickStrings([-1, 99], 1, 1) == ["", ""]
+
+    def test_tick_strings_sparse(self, qapp):
+        """稀疏刻度显示完整日期"""
+        dates = ["2024-01-01", "2024-01-02"]
+        axis = AxisTime(dates)
+        assert axis.tickStrings([0, 1], 1, 100) == ["2024-01-01", "2024-01-02"]
+
+    def test_tick_strings_dedup(self, qapp):
+        """大跨度显示 YYYY-MM，连续相同标签去重"""
+        dates = ["2024-01-15", "2024-01-20", "2024-02-10"]
+        axis = AxisTime(dates)
+        assert axis.tickStrings([0, 1, 2], 1, 300) == ["2024-01", "", "2024-02"]
 
     def test_set_dates(self, qapp):
         axis = AxisTime([])
-        axis.set_dates(["a", "b"])
-        assert axis.tickStrings([0], 1, 1) == ["a"]
+        axis.set_dates(["2024-01-01", "2024-01-02"])
+        assert axis.tickStrings([0], 1, 1) == ["01-01"]
 
 
 # ========== equity_chart ==========
@@ -289,6 +302,52 @@ class TestKlineChart:
         elapsed = time.time() - t0
         assert isinstance(w, pg.GraphicsLayoutWidget)
         assert elapsed < 3.0, f"10000 根 K 线构建耗时 {elapsed:.2f}s 超标"
+
+    def test_wheel_zoom_disabled(self, qapp, sample_ohlcv):
+        """K线主子图都用 NoWheelViewBox（滚轮不缩放，缩放走按钮）"""
+        from desktop.charts.kline_chart import NoWheelViewBox
+        w = build_kline_widget(sample_ohlcv, "000001.SZ", "D")
+        assert isinstance(w.kline_vb, NoWheelViewBox)
+        # 主图 + 成交量子图都禁用滚轮
+        price_item = w.getItem(0, 0)
+        vol_item = w.getItem(1, 0)
+        assert isinstance(price_item.vb, NoWheelViewBox)
+        assert isinstance(vol_item.vb, NoWheelViewBox)
+
+    def test_zoom_kline_x_in(self, qapp, sample_ohlcv):
+        """放大：X 跨度变小，中心保持"""
+        from desktop.charts.kline_chart import zoom_kline_x
+        w = build_kline_widget(sample_ohlcv, "000001.SZ", "D")
+        (x0, x1), _ = w.kline_vb.viewRange()
+        zoom_kline_x(w, 0.8)
+        (nx0, nx1), _ = w.kline_vb.viewRange()
+        assert (nx1 - nx0) < (x1 - x0)
+
+    def test_zoom_kline_x_out_clamped(self, qapp, sample_ohlcv):
+        """缩小：跨度最多放大到全部数据"""
+        from desktop.charts.kline_chart import zoom_kline_x
+        w = build_kline_widget(sample_ohlcv, "000001.SZ", "D")
+        n = w.kline_n
+        zoom_kline_x(w, 0.8)
+        for _ in range(10):
+            zoom_kline_x(w, 1.25)
+        (x0, x1), _ = w.kline_vb.viewRange()
+        assert (x1 - x0) <= n
+
+    def test_zoom_kline_x_min_span(self, qapp, sample_ohlcv):
+        """放大下限：至少显示 10 根 K 线"""
+        from desktop.charts.kline_chart import zoom_kline_x
+        w = build_kline_widget(sample_ohlcv, "000001.SZ", "D")
+        for _ in range(30):
+            zoom_kline_x(w, 0.8)
+        (x0, x1), _ = w.kline_vb.viewRange()
+        assert (x1 - x0) >= min(10.0, float(w.kline_n)) - 1e-6
+
+    def test_zoom_kline_x_no_vb(self, qapp):
+        """无 kline_vb 的空 widget 调用缩放不报错"""
+        from desktop.charts.kline_chart import zoom_kline_x
+        w = build_kline_widget(pd.DataFrame(), "X", "D")
+        zoom_kline_x(w, 0.8)  # 不应抛异常
 
 
 # ========== radar_chart ==========
