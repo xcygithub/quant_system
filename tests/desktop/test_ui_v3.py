@@ -6,6 +6,33 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QPushButton, QLabel
 
 
+class TestDerivedFields:
+    """行情详情页字段补齐"""
+
+    def test_enrich_pct_change_and_amplitude(self, qapp):
+        import pandas as pd
+        from desktop.pages.watchlist_page import _enrich_derived_fields
+
+        df = pd.DataFrame({
+            "date": ["2024-01-01", "2024-01-02", "2024-01-03"],
+            "open": [10.0, 10.5, 10.2],
+            "high": [10.6, 10.8, 10.5],
+            "low": [9.9, 10.4, 10.1],
+            "close": [10.5, 10.2, 10.4],
+            "volume": [1000, 1200, 1100],
+            "amount": [10500, 12240, 11440],
+            "pct_change": [0.0, 0.0, 0.0],
+            "amplitude": [0.0, 0.0, 0.0],
+            "change_amount": [0.0, 0.0, 0.0],
+        })
+        out = _enrich_derived_fields(df).sort_values("date").reset_index(drop=True)
+        # 第一行无昨收，允许为 NaN；第二行起由 OHLC 计算
+        assert abs(out.loc[1, "pct_change"] - ((10.2 - 10.5) / 10.5 * 100)) < 1e-6
+        assert abs(out.loc[2, "pct_change"] - ((10.4 - 10.2) / 10.2 * 100)) < 1e-6
+        assert abs(out.loc[1, "amplitude"] - ((10.8 - 10.4) / 10.5 * 100)) < 1e-6
+        assert abs(out.loc[1, "change_amount"] - (10.2 - 10.5)) < 1e-6
+
+
 class TestTokens:
     """设计令牌基本约束"""
 

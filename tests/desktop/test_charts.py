@@ -324,7 +324,7 @@ class TestKlineChart:
         assert (nx1 - nx0) < (x1 - x0)
 
     def test_zoom_kline_x_out_clamped(self, qapp, sample_ohlcv):
-        """缩小：跨度最多放大到全部数据"""
+        """缩小：跨度最多放大到全部数据（含右侧给日期标签留的 1 根空白）"""
         from desktop.charts.kline_chart import zoom_kline_x
         w = build_kline_widget(sample_ohlcv, "000001.SZ", "D")
         n = w.kline_n
@@ -332,7 +332,7 @@ class TestKlineChart:
         for _ in range(10):
             zoom_kline_x(w, 1.25)
         (x0, x1), _ = w.kline_vb.viewRange()
-        assert (x1 - x0) <= n
+        assert (x1 - x0) <= n + 1
 
     def test_zoom_kline_x_min_span(self, qapp, sample_ohlcv):
         """放大下限：至少显示 10 根 K 线"""
@@ -348,6 +348,53 @@ class TestKlineChart:
         from desktop.charts.kline_chart import zoom_kline_x
         w = build_kline_widget(pd.DataFrame(), "X", "D")
         zoom_kline_x(w, 0.8)  # 不应抛异常
+
+    def test_bottom_axis_visible(self, qapp, sample_ohlcv):
+        """成交量子图底部日期轴可见，主图底部隐藏"""
+        w = build_kline_widget(sample_ohlcv, "000001.SZ", "D")
+        price_item = w.getItem(0, 0)
+        vol_item = w.getItem(1, 0)
+        assert price_item.getAxis("bottom").isVisible() is False
+        assert vol_item.getAxis("bottom").isVisible() is True
+
+    def test_x_range_covers_data_with_right_margin(self, qapp, sample_ohlcv):
+        """初始化 X 范围应覆盖全部数据并给右侧留空用于日期标签"""
+        w = build_kline_widget(sample_ohlcv, "000001.SZ", "D")
+        n = w.kline_n
+        (x0, x1), _ = w.kline_vb.viewRange()
+        assert x0 <= 0
+        assert x1 >= n - 0.5
+
+    def test_info_card_includes_amount_and_turnover(self, qapp):
+        """信息卡默认显示最后一根 K 线的 OHLCV/成交额/换手率/涨跌等"""
+        np.random.seed(7)
+        n = 30
+        dates = pd.date_range("2024-01-01", periods=n, freq="B").strftime("%Y-%m-%d")
+        close = 10 + np.cumsum(np.random.randn(n) * 0.3)
+        opens = close - np.random.randn(n) * 0.2
+        highs = np.maximum(opens, close) + np.random.rand(n) * 0.3
+        lows = np.minimum(opens, close) - np.random.rand(n) * 0.3
+        vols = np.random.randint(100000, 500000, n).astype(float)
+        df = pd.DataFrame({
+            "date": dates, "open": opens, "high": highs, "low": lows,
+            "close": close, "volume": vols,
+            "amount": vols * close,
+            "turnover": np.random.uniform(0.5, 3.0, n),
+        })
+        w = build_kline_widget(df, "000001.SZ", "D")
+        price_item = w.getItem(0, 0)
+        tip = next(
+            (it for it in price_item.items
+             if isinstance(it, pg.TextItem) and it.anchor[0] == 0 and it.anchor[1] == 1),
+            None,
+        )
+        assert tip is not None
+        html = tip.toHtml()
+        assert "成交量" in html
+        assert "成交额" in html
+        assert "换手率" in html
+        assert "涨跌幅" in html
+        assert "涨跌额" in html
 
 
 # ========== radar_chart ==========

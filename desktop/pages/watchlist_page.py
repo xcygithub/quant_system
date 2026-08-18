@@ -143,6 +143,66 @@ def _resample_kline(df: pd.DataFrame, period: str) -> pd.DataFrame:
     return agg.reset_index()
 
 
+def _enrich_derived_fields(df: pd.DataFrame) -> pd.DataFrame:
+    """补全/修正行情衍生字段（涨跌幅、涨跌额、振幅）。
+
+    Baostock 返回的 turnover/pct_change/amplitude/change_amount 可能为 0，
+    这里用 OHLC 重新计算能算出的字段； turnover 因缺少股本无法计算，保留原值。
+    """
+    if df is None or df.empty:
+        return df
+    out = df.copy()
+    # 统一日期格式并升序
+    out["date"] = pd.to_datetime(out["date"]).dt.strftime("%Y-%m-%d")
+    out = out.sort_values("date").reset_index(drop=True)
+
+    numeric_cols = ["open", "high", "low", "close", "volume", "amount"]
+    for c in numeric_cols:
+        if c in out.columns:
+            out[c] = pd.to_numeric(out[c], errors="coerce")
+
+    prev_close = out["close"].shift(1)
+    has_prev = prev_close.notna() & (prev_close != 0)
+
+    # 涨跌额
+    derived_change = out["close"] - prev_close
+    if "change_amount" in out.columns:
+        out["change_amount"] = pd.to_numeric(out["change_amount"], errors="coerce")
+        out["change_amount"] = out["change_amount"].where(
+            out["change_amount"].notna() & (out["change_amount"].abs() > 1e-9),
+            derived_change,
+        )
+    else:
+        out["change_amount"] = derived_change
+
+    # 涨跌幅
+    derived_pct = (derived_change / prev_close * 100).where(has_prev)
+    if "pct_change" in out.columns:
+        out["pct_change"] = pd.to_numeric(out["pct_change"], errors="coerce")
+        out["pct_change"] = out["pct_change"].where(
+            out["pct_change"].notna() & (out["pct_change"].abs() > 1e-9),
+            derived_pct,
+        )
+    else:
+        out["pct_change"] = derived_pct
+
+    # 振幅：无昨收时用开盘价兜底
+    derived_amp = ((out["high"] - out["low"]) / prev_close * 100).where(has_prev)
+    derived_amp_open = ((out["high"] - out["low"]) / out["open"] * 100).where(out["open"] != 0)
+    derived_amp = derived_amp.fillna(derived_amp_open)
+    if "amplitude" in out.columns:
+        out["amplitude"] = pd.to_numeric(out["amplitude"], errors="coerce")
+        out["amplitude"] = out["amplitude"].where(
+            out["amplitude"].notna() & (out["amplitude"].abs() > 1e-9),
+            derived_amp,
+        )
+    else:
+        out["amplitude"] = derived_amp
+
+    # turnover 无法从 OHLCV 计算，保持原样；若整列为空/0，后续展示时可丢弃
+    return out
+
+
 # ============ Checkbox 表格模型 ============
 
 class CheckableTableModel(QSortFilterProxyModel):
@@ -1113,15 +1173,12 @@ class WatchlistPage(BasePage):
 
         # 图表
         self._chart = ChartContainer(title=f"{symbol} K线走势")
-        self._chart.setMinimumHeight(420)
+        self._chart.setMinimumHeight(480)   # 给底部日期轴留出足够高度
         self._view_layout.addWidget(self._chart, 1)
 
-        # 数据表
-        self._detail_table_container = QWidget()
-        self._detail_table_container.setLayout(QVBoxLayout())
-        self._detail_table_container.layout().setContentsMargins(0, 0, 0, 0)
-        self._detail_table_container.layout().setSpacing(8)
-        self._view_layout.addWidget(self._detail_table_container)
+        # 不再渲染下方数据表，主要数据通过 K 线十字光标信息卡显示
+        # （_render_detail_table 已转为 no-op 保留以免影响其他入口）
+        self._detail_table_container = None
 
         self._load_detail()
 
@@ -1203,25 +1260,9 @@ class WatchlistPage(BasePage):
             pass
 
     def _render_detail_table(self, df):
-        try:
-            layout = self._detail_table_container.layout()
-        except RuntimeError:
-            return
-        self._clear_layout(layout)
-        if df is None or df.empty:
-            layout.addWidget(QLabel("暂无数据"))
-            return
-        show = df.sort_values("date", ascending=False).head(50).copy()
-        table = PandasTableView()
-        table.set_dataframe(
-            show,
-            formatters={
-                "close": "{:.2f}", "open": "{:.2f}", "high": "{:.2f}", "low": "{:.2f}",
-                "volume": "{:.0f}", "amount": "{:.0f}", "pct_change": "{:+.2f}",
-            },
-        )
-        table.setMinimumHeight(260)
-        layout.addWidget(table)
+        # 不再显示具体交易明细表格（按用户偏好）。主要 OHLCV 数据通过
+        # K 线图的十字光标信息卡展示。
+        return
 
     def _on_period_changed(self, _text):
         self._render_detail_chart()

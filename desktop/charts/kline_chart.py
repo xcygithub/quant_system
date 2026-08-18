@@ -70,17 +70,18 @@ def zoom_kline_x(glw, factor: float):
     (xmin, xmax), _ = vb.viewRange()
     center = (xmin + xmax) / 2.0
     span = (xmax - xmin) * factor
-    # 至少显示 10 根 K 线，最多显示全部
-    span = max(min(10.0, float(n)), min(span, float(n)))
+    # 至少显示 10 根 K 线，最多显示全部（右侧多留一根空白给日期标签）
+    max_span = float(n) + 1.0
+    span = max(min(10.0, max_span), min(span, max_span))
     half = span / 2.0
     lo, hi = center - half, center + half
-    # 钳制在数据范围内（左右各留半根 K 线边距）
+    # 钳制在数据范围内
     if lo < -0.5:
         hi += -0.5 - lo
         lo = -0.5
-    if hi > n - 0.5:
-        lo -= hi - (n - 0.5)
-        hi = n - 0.5
+    if hi > n + 0.5:
+        lo -= hi - (n + 0.5)
+        hi = n + 0.5
     vb.setXRange(lo, hi, padding=0)
 
 
@@ -89,7 +90,7 @@ def build_kline_widget(
     symbol: str,
     period: str = "D",
     *,
-    height: int = 820,
+    height: int = 420,
 ) -> pg.GraphicsLayoutWidget:
     """构建 K 线图 widget
 
@@ -109,6 +110,12 @@ def build_kline_widget(
     if df is None or df.empty:
         return glw
 
+    # 默认 view 铺满数据范围，左右各留半根 K 线的边距，
+    # 右侧额外再多留一根，确保最右端日期标签不被裁切。
+    def _init_x_range(vb, n_bars: int):
+        if n_bars > 0:
+            vb.setXRange(-0.5, n_bars + 0.5, padding=0)
+
     df = df.reset_index(drop=True).copy()
     n = len(df)
 
@@ -124,8 +131,12 @@ def build_kline_widget(
     price_item = glw.addPlot(row=0, col=0, viewBox=NoWheelViewBox())
     apply_plot_style(price_item)
     price_item.showGrid(x=False, y=True, alpha=0.12)   # 只留横向淡网格
+    # 主图左侧不显示标签也要占位，否则与成交量子图左右不齐
+    price_item.getAxis("left").setWidth(55)
+    price_item.getAxis("right").setWidth(0)
 
     axis = AxisTime(date_str, orientation="bottom")
+    axis.setTickFont(make_legend_font(8))      # 小字号，避免拥挤
     price_item.showAxis("bottom", show=False)  # 主图 X 轴刻度隐藏，让成交量子图显示
 
     # K 线
@@ -170,8 +181,15 @@ def build_kline_widget(
     vol_item.showGrid(x=False, y=True, alpha=0.12)
     vol_item.setLabel("left", "成交量")
     vol_item.setAxisItems({"bottom": axis})
-    vol_item.setXLink(price_item)   # 共享 X 轴
-    vol_item.setMaximumHeight(220)
+    vol_item.showAxis("bottom", True)   # 显式开启横轴日期
+    vol_item.setXLink(price_item)       # 共享 X 轴
+    vol_item.setMaximumHeight(110)
+    # 与主图保持同样的左侧/右侧轴宽，保证 K 线与成交量在 X 轴上严格对齐
+    vol_item.getAxis("left").setWidth(55)
+    vol_item.getAxis("right").setWidth(0)
+
+    # 限制子图高度，避免在 420px 容器里底部横轴被裁掉
+    price_item.setMinimumHeight(220)
 
     if "volume" in df.columns:
         vol = df["volume"].values.astype(float)
@@ -195,14 +213,29 @@ def build_kline_widget(
             vma = df["volume"].rolling(5).mean().values.astype(float)
             vol_item.plot(x, vma, pen=pg.mkPen(color=(95, 94, 90, 200), width=1.2))
 
+    # 准备信息卡需要的额外字段（前收、成交额、换手率）
+    prev_close = df["close"].shift(1).values.astype(float) if "close" in df.columns else None
+    amount_arr = pd.to_numeric(df.get("amount"), errors="coerce").values if "amount" in df.columns else None
+    turnover_arr = pd.to_numeric(df.get("turnover"), errors="coerce").values if "turnover" in df.columns else None
+
+    # 初始化 X 轴范围，让首尾 K 线都完整显示在视口内
+    _init_x_range(price_item.vb, n)
+    # 关闭 X 轴自动缩放，避免 setXRange 被 pyqtgraph 自动 range 覆盖
+    price_item.vb.disableAutoRange(pg.ViewBox.XAxis)
+    vol_item.vb.disableAutoRange(pg.ViewBox.XAxis)
+
     # 行高比例 7:3
     glw.ci.layout.setRowStretchFactor(0, 7)
     glw.ci.layout.setRowStretchFactor(1, 3)
     glw.ci.layout.setRowSpacing(0, 2)     # 子图间隙收紧
-    glw.ci.layout.setContentsMargins(2, 2, 2, 2)
+    # 左右留空，避免首尾日期标签被裁切
+    glw.ci.layout.setContentsMargins(6, 2, 40, 2)
 
-    # 十字光标（主图 + 信息卡片 + 右轴价位标签）
-    _install_kline_crosshair(price_item, vol_item, x, df, date_str)
+    # 十字光标（主图 + 信息卡片 + 右轴价位标签 + 点击选中）
+    _install_kline_crosshair(
+        price_item, vol_item, x, df, date_str,
+        prev_close=prev_close, amount_arr=amount_arr, turnover_arr=turnover_arr,
+    )
 
     # 暴露给页面层：缩放按钮通过 zoom_kline_x(glw, factor) 操作
     glw.kline_vb = price_item.vb
@@ -211,8 +244,16 @@ def build_kline_widget(
     return glw
 
 
-def _install_kline_crosshair(price_item, vol_item, x, df, date_str):
-    """主图 + 成交量子图联动的十字光标、信息卡片与右轴价位标签"""
+def _install_kline_crosshair(
+    price_item, vol_item, x, df, date_str,
+    prev_close=None, amount_arr=None, turnover_arr=None,
+):
+    """主图 + 成交量子图联动的十字光标、信息卡片、右轴价位标签与点击选中。
+
+    信息卡（OHLCV + 涨跌/振幅/成交额/换手率）默认始终显示最后一根 K 线数据；
+    鼠标移动时更新为悬停位置的 K 线（不刷新信息卡），点击 K 线时锁定信息卡到
+    该 K 线，并显示一条红色选中竖线，移出图表时选中态保持。
+    """
     line_pen = pg.mkPen(color=(150, 150, 150, 140), width=1, style=Qt.DashLine)
     vline = pg.InfiniteLine(angle=90, pen=line_pen)
     hline = pg.InfiniteLine(angle=0, pen=line_pen)
@@ -222,15 +263,25 @@ def _install_kline_crosshair(price_item, vol_item, x, df, date_str):
     vline_vol = pg.InfiniteLine(angle=90, pen=line_pen)
     vol_item.addItem(vline_vol, ignoreBounds=True)
 
+    # 选中竖线（点击后常驻）
+    sel_pen = pg.mkPen(color=(229, 90, 78, 200), width=1, style=Qt.SolidLine)
+    selected_vline = pg.InfiniteLine(angle=90, pen=sel_pen)
+    selected_vline.setZValue(50)
+    price_item.addItem(selected_vline, ignoreBounds=True)
+    selected_vline_vol = pg.InfiniteLine(angle=90, pen=sel_pen)
+    selected_vline_vol.setZValue(50)
+    vol_item.addItem(selected_vline_vol, ignoreBounds=True)
+    selected_vline.hide()
+    selected_vline_vol.hide()
+
     # 信息卡片：白底圆角边框，固定在主图左上角
     tip = pg.TextItem(
         anchor=(0, 1), color=COLOR_FOREGROUND,
-        fill=pg.mkBrush(255, 255, 255, 235),
+        fill=pg.mkBrush(255, 255, 255, 240),
         border=pg.mkPen(qcolor_to_rgba(COLOR_CARD_BORDER)),
     )
     tip.setFont(make_legend_font(9))
     tip.setZValue(100)
-    tip.hide()
     price_item.addItem(tip, ignoreBounds=True)
 
     # 右轴价位标签：深底白字，跟随十字线横线
@@ -240,7 +291,6 @@ def _install_kline_crosshair(price_item, vol_item, x, df, date_str):
     )
     tag.setFont(make_legend_font(9))
     tag.setZValue(100)
-    tag.hide()
     price_item.addItem(tag, ignoreBounds=True)
 
     x_arr = np.asarray(x, dtype=float)
@@ -250,6 +300,75 @@ def _install_kline_crosshair(price_item, vol_item, x, df, date_str):
     lows = df["low"].values.astype(float) if "low" in df.columns else None
     closes = df["close"].values.astype(float) if "close" in df.columns else None
     vols = df["volume"].values.astype(float) if "volume" in df.columns else None
+    if prev_close is None and closes is not None:
+        prev_close = np.concatenate([[np.nan], closes[:-1]])
+
+    def _fmt_volume(v):
+        if v is None or not np.isfinite(v):
+            return "-"
+        if v >= 1e8:
+            return f"{v / 1e8:.2f}亿"
+        if v >= 1e4:
+            return f"{v / 1e4:.0f}万"
+        return f"{v:,.0f}"
+
+    def _fmt_amount(v):
+        if v is None or not np.isfinite(v):
+            return "-"
+        if v >= 1e8:
+            return f"{v / 1e8:.2f}亿"
+        if v >= 1e4:
+            return f"{v / 1e4:.0f}万"
+        return f"{v:,.0f}"
+
+    def _fmt_pct(v):
+        if v is None or not np.isfinite(v):
+            return "-"
+        return f"{v:+.2f}%"
+
+    def _fmt_pct_unsigned(v):
+        if v is None or not np.isfinite(v):
+            return "-"
+        return f"{v:.2f}%"
+
+    def _build_html(idx: int) -> str:
+        if closes is None or not (0 <= idx < n):
+            return ""
+        up = opens is None or closes[idx] >= opens[idx]
+        col = "#E24B4A" if up else "#639922"
+        date_label = date_str[idx] if 0 <= idx < len(date_str) else ""
+        # 衍生指标
+        pc = prev_close[idx] if prev_close is not None and idx < len(prev_close) else np.nan
+        change = closes[idx] - pc if np.isfinite(pc) else np.nan
+        change_pct = (change / pc * 100) if np.isfinite(pc) and pc != 0 else np.nan
+        amp = ((highs[idx] - lows[idx]) / pc * 100) if (np.isfinite(pc) and pc != 0
+                                                     and highs is not None and lows is not None) else np.nan
+        if not np.isfinite(amp) and highs is not None and lows is not None and opens is not None and opens[idx] != 0:
+            amp = (highs[idx] - lows[idx]) / opens[idx] * 100
+        # OHLC/量/额
+        lines = [f"<b>{date_label}</b>"]
+        if opens is not None:
+            lines.append(f'开 <span style="color:{col}">{opens[idx]:.2f}</span>')
+        if highs is not None:
+            lines.append(f"高 {highs[idx]:.2f}")
+        if lows is not None:
+            lines.append(f"低 {lows[idx]:.2f}")
+        lines.append(f'收 <span style="color:{col}">{closes[idx]:.2f}</span>')
+        if np.isfinite(change):
+            chg_col = "#E24B4A" if change >= 0 else "#639922"
+            lines.append(f'涨跌额 <span style="color:{chg_col}">{change:+.2f}</span>')
+        if np.isfinite(change_pct):
+            chg_col = "#E24B4A" if change_pct >= 0 else "#639922"
+            lines.append(f'涨跌幅 <span style="color:{chg_col}">{change_pct:+.2f}%</span>')
+        if np.isfinite(amp):
+            lines.append(f"振幅 {amp:.2f}%")
+        if vols is not None:
+            lines.append(f"成交量 {_fmt_volume(vols[idx])}")
+        if amount_arr is not None and idx < len(amount_arr):
+            lines.append(f"成交额 {_fmt_amount(amount_arr[idx])}")
+        if turnover_arr is not None and idx < len(turnover_arr) and np.isfinite(turnover_arr[idx]):
+            lines.append(f"换手率 {turnover_arr[idx]:.2f}%")
+        return "<br>".join(lines)
 
     def _reposition(price_y=None):
         """把卡片钉在可视区左上角、价位标签钉在右缘"""
@@ -259,42 +378,53 @@ def _install_kline_crosshair(price_item, vol_item, x, df, date_str):
         if price_y is not None:
             tag.setPos(xmax - pad, price_y)
 
+    def _update_crosshair(idx: int):
+        """仅更新悬停十字线、信息卡和价位标签（不改变选中态）"""
+        if closes is None or not (0 <= idx < n):
+            return
+        price = closes[idx]
+        vline.setPos(x_arr[idx])
+        vline_vol.setPos(x_arr[idx])
+        hline.setPos(price)
+        tip.setHtml(_build_html(idx))
+        tip.show()
+        tag.setText(f"{price:.2f}")
+        tag.show()
+        _reposition(price)
+
+    def _update_selected(idx: int):
+        """点击选中：在 K 线上锁定信息卡与红色选中线"""
+        if closes is None or not (0 <= idx < n):
+            return
+        selected_vline.setPos(x_arr[idx])
+        selected_vline.show()
+        selected_vline_vol.setPos(x_arr[idx])
+        selected_vline_vol.show()
+        _update_crosshair(idx)
+
+    # 初始默认显示最后一根 K 线的明细（无需用户悬停）
+    if n > 0:
+        _update_crosshair(n - 1)
+
     def on_mouse_moved(evt_pos):
         if not price_item.sceneBoundingRect().contains(evt_pos):
-            tip.hide()
-            tag.hide()
             return
         mp = price_item.vb.mapSceneToView(evt_pos)
         xv = mp.x()
         if n == 0:
             return
         idx = int(np.clip(round(xv), 0, n - 1))
-        vline.setPos(x_arr[idx])
-        vline_vol.setPos(x_arr[idx])
-        if closes is None:
+        _update_crosshair(idx)
+
+    def on_mouse_clicked(evt):
+        if not price_item.sceneBoundingRect().contains(evt.scenePos()):
             return
-        price = closes[idx]
-        hline.setPos(price)
-        date_label = date_str[idx] if 0 <= idx < len(date_str) else ""
-
-        # 开/收按当日涨跌着色
-        up = opens is None or closes[idx] >= opens[idx]
-        col = "#E24B4A" if up else "#639922"
-        lines = [f"<b>{date_label}</b>"]
-        if opens is not None:
-            lines.append(f'开 <span style="color:{col}">{opens[idx]:.2f}</span>')
-        if highs is not None:
-            lines.append(f"高 {highs[idx]:.2f}")
-        if lows is not None:
-            lines.append(f"低 {lows[idx]:.2f}")
-        lines.append(f'收 <span style="color:{col}">{closes[idx]:.2f}</span>')
-        if vols is not None:
-            lines.append(f"量 {vols[idx]:,.0f}")
-        tip.setHtml("<br>".join(lines))
-        tip.show()
-
-        tag.setText(f"{price:.2f}")
-        tag.show()
-        _reposition(price)
+        mp = price_item.vb.mapSceneToView(evt.scenePos())
+        xv = mp.x()
+        if n == 0:
+            return
+        idx = int(np.clip(round(xv), 0, n - 1))
+        _update_selected(idx)
 
     price_item.scene().sigMouseMoved.connect(on_mouse_moved)
+    price_item.scene().sigMouseClicked.connect(on_mouse_clicked)

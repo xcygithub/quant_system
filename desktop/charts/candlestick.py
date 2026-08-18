@@ -129,6 +129,32 @@ class AxisTime(pg.AxisItem):
         self._dates = list(dates) if dates is not None else []
         self.update()
 
+    def tickValues(self, minVal, maxVal, size):
+        """自定义主刻度：约 6 个均匀刻度，并确保首尾有标签、不重叠。"""
+        n = len(self._dates)
+        if n == 0:
+            return []
+        minVal = max(float(minVal), -0.5)
+        maxVal = min(float(maxVal), n - 0.5)
+        rng = maxVal - minVal
+        if rng <= 0:
+            return []
+        target = 6
+        # 用 target-1 做分母，让最后一个刻度尽量对齐 end
+        step = max(1, int(rng / max(1, target - 1)))
+        start = int(max(0, np.floor(minVal)))
+        end = int(min(n - 1, np.floor(maxVal)))
+        values = list(range(start, end + 1, step))
+        if not values:
+            values = [start]
+        if values[-1] != end:
+            # 若最后一个刻度太挤，替换而非追加，避免标签重叠
+            if end - values[-1] < step * 0.5 and len(values) > 1:
+                values[-1] = end
+            else:
+                values.append(end)
+        return [(float(step), values)]
+
     def tickStrings(self, values, scale, spacing):
         # 按刻度间距选日期格式：跨度大显示年月，密集时只显月日
         if spacing >= 250:
