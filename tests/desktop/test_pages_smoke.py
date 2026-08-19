@@ -273,13 +273,64 @@ class TestWatchlistUIRedesignCleanup:
         finally:
             shutdown_workers(timeout_ms=3000)
 
-    def test_refresh_btn_enabled_after_quotes_loaded(self, qapp):
-        """回归：行情 worker 完成后必须恢复【刷新】按钮 enabled 状态
+class TestBasePageScroll:
+    """回归：BasePage 可选外层滚动容器（方案 A'）
 
-        历史 bug：删除自动刷新字段时误删了 `_on_quotes_loaded`/`_on_quotes_load_error`
-        里的 `setEnabled(True)`，只保留了 `setText("刷新")`，导致按钮永远是 disabled，
-        用户点了【刷新】没反应。锁住 enabled 状态恢复行为。
-        """
+    背景：策略回测页内容（约 1300px）超出视口，底部交易明细/持仓区被压扁，
+    只剩横向滚动条可见。修复在 BasePage 增加 scrollable 参数（默认 False），
+    仅在需要时把 _content_container 包进 QScrollArea#pageScroll。
+    本组测试锁住「默认关闭、开启可滚动」语义，防止：
+    1. 默认行为改变，波及自选股/财务数据等已有内层滚动方案的页面（嵌套滚动）
+    2. 未来某页误传 scrollable 后又回退，导致底部内容再次压扁
+    """
+
+    def test_scrollable_true_creates_page_scroll(self, qapp):
+        from PySide6.QtWidgets import QScrollArea
+        from desktop.pages.base_page import BasePage
+        page = BasePage(title="测试", scrollable=True)
+        assert page._page_scroll is not None
+        assert isinstance(page._page_scroll, QScrollArea)
+        # content_container 必须被 setWidget，否则内容不会进入滚动区
+        assert page._page_scroll.widget() is page._content_container
+
+    def test_scrollable_false_no_page_scroll(self, qapp):
+        from desktop.pages.base_page import BasePage
+        page = BasePage(title="测试")
+        assert page._page_scroll is None, \
+            "默认 scrollable=False 时不得创建外层滚动容器（保持历史页面现状）"
+
+    def test_backtest_page_is_scrollable(self, qapp):
+        from desktop.pages.backtest_page import BacktestPage
+        page = BacktestPage()
+        assert page._page_scroll is not None, \
+            "策略回测页必须开启外层滚动，否则底部交易明细会被压扁"
+
+    def test_watchlist_page_not_scrollable_by_default(self, qapp):
+        from desktop.pages.watchlist_page import WatchlistPage
+        page = WatchlistPage()
+        try:
+            assert page._page_scroll is None, \
+                "自选股页已有内层 QScrollArea，不得再套外层滚动（避免嵌套滚动）"
+        finally:
+            shutdown_workers(timeout_ms=3000)
+
+    def test_scrollable_vertical_only_horizontal_off(self, qapp):
+        from PySide6.QtCore import Qt
+        from desktop.pages.base_page import BasePage
+        page = BasePage(title="测试", scrollable=True)
+        assert page._page_scroll.horizontalScrollBarPolicy() == Qt.ScrollBarAlwaysOff, \
+            "外层滚动应禁用横向滚动条（横向溢出靠子控件自适应，不出现横条）"
+
+
+class TestWatchlistRefreshEnabledRestored:
+    """回归：行情 worker 完成后必须恢复【刷新】按钮 enabled 状态
+
+    历史 bug：删除自动刷新字段时误删了 `_on_quotes_loaded`/`_on_quotes_load_error`
+    里的 `setEnabled(True)`，只保留了 `setText("刷新")`，导致按钮永远是 disabled，
+    用户点了【刷新】没反应。锁住 enabled 状态恢复行为。
+    """
+
+    def test_refresh_btn_enabled_after_quotes_loaded(self, qapp):
         from desktop.pages.watchlist_page import WatchlistPage
         from unittest.mock import patch
         import time

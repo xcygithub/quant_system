@@ -4,8 +4,9 @@
 所有 Tab 页面的公共基类，提供统一的页面标题和内容区域布局。
 后续阶段迁移时，子类在 _build_content() 中填充具体内容。
 """
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QFrame, QLabel, QHBoxLayout
+    QWidget, QVBoxLayout, QFrame, QLabel, QHBoxLayout, QScrollArea
 )
 
 from desktop.styles import tokens
@@ -28,10 +29,12 @@ class BasePage(QWidget):
     └──────────────────────────┘
     """
 
-    def __init__(self, title: str = "", subtitle: str = "", parent=None):
+    def __init__(self, title: str = "", subtitle: str = "", parent=None,
+                 scrollable: bool = False):
         super().__init__(parent)
         self._title = title
         self._subtitle = subtitle
+        self._scrollable = scrollable
         self._setup_ui()
 
     def _setup_ui(self):
@@ -86,7 +89,22 @@ class BasePage(QWidget):
         self._content_container = QWidget()
         self._content_layout = QVBoxLayout(self._content_container)
         self._content_layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(self._content_container, 1)
+
+        # 外层滚动容器（可选：scrollable=True 时启用）
+        # 内容超出视口时纵向滚动、横向禁用；子类零改动自动受益。
+        # 默认关闭，保持历史页面（自选股/财务数据等已有内层滚动方案）现状不变。
+        self._page_scroll = None
+        if self._scrollable:
+            self._page_scroll = QScrollArea()
+            self._page_scroll.setObjectName("pageScroll")
+            self._page_scroll.setWidgetResizable(True)
+            self._page_scroll.setFrameShape(QFrame.NoFrame)
+            self._page_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            self._page_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+            self._page_scroll.setWidget(self._content_container)
+            layout.addWidget(self._page_scroll, 1)
+        else:
+            layout.addWidget(self._content_container, 1)
 
         # 子类在此填充内容
         self._build_content()

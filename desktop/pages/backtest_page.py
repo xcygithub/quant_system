@@ -98,6 +98,7 @@ class BacktestPage(BasePage):
         super().__init__(
             title="策略回测",
             subtitle="支持单股 / 组合回测与参数化策略配置",
+            scrollable=True,
             parent=parent,
         )
         self._state = AppState.instance()

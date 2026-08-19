@@ -549,6 +549,16 @@ QProgressBar::chunk {
     border-radius: 6px;
 }
 
+/* ---------- 页面外层滚动容器（BasePage scrollable=True） ---------- */
+QScrollArea#pageScroll {
+    background-color: transparent;
+    border: none;
+}
+
+QScrollArea#pageScroll QWidget#qt_scrollarea_viewport {
+    background-color: transparent;
+}
+
 /* ---------- 滚动条 ---------- */
 QScrollBar:vertical {
     background-color: transparent;
