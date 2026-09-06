@@ -16,7 +16,8 @@ from typing import Dict, List, Optional
 from PySide6.QtWidgets import (QWidget, QComboBox, QHBoxLayout, QLabel,
                                  QLineEdit, QRadioButton, QButtonGroup,
                                  QVBoxLayout, QCompleter, QFrame,
-                                 QCheckBox, QScrollArea, QGridLayout)
+                                 QCheckBox, QScrollArea, QGridLayout,
+                                 QPushButton)
 from PySide6.QtCore import Signal, Qt, QStringListModel
 
 
@@ -299,7 +300,8 @@ class StockCheckboxGroup(QWidget):
     def _on_select_all(self, state: int):
         if self._building:
             return
-        checked = (state == Qt.Checked)
+        # PySide6 6.x: stateChanged 传 int，Qt.Checked 是 enum，用 or 兼容两种情况
+        checked = (state == Qt.Checked or state == Qt.Checked.value)
         self._building = True
         for cb in self._checkboxes.values():
             cb.setChecked(checked)
@@ -317,3 +319,316 @@ class StockCheckboxGroup(QWidget):
         else:
             self._select_all.setCheckState(Qt.PartiallyChecked)
         self._building = False
+
+
+class _ClickableLabel(QLabel):
+    """可点击的折叠箭头标签（显示 ▼/▶ Unicode 字符）
+
+    不用 QToolButton 的原因：theme.qss 对 QToolButton 有全局
+    min-height:32 + padding:0 16px 样式，与折叠箭头所需的 22×22
+    尺寸冲突，导致 arrowType 图标渲染不出来。改用 QLabel 显示字符，
+    完全不受按钮样式影响，跨平台字形稳定。
+    """
+    clicked = Signal()
+
+    def __init__(self, text: str = "", parent=None):
+        super().__init__(text, parent)
+        self.setFixedSize(22, 22)
+        self.setAlignment(Qt.AlignCenter)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setObjectName("groupArrow")
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self.clicked.emit()
+        super().mousePressEvent(event)
+
+
+class StockGroupSelector(QWidget):
+    """按自选股分组组织的股票多选组件（分组三态勾选 + 搜索 + 折叠）
+
+    替代平铺式 StockCheckboxGroup，用于策略回测页的股票选择。
+    一级为分组（可整体勾选），二级为个股；组头 QCheckBox 支持三态
+    （全选✓ / 半选▣ / 不选□）。折叠只隐藏显示，不影响已勾选状态。
+
+    Signals:
+        selection_changed(list): 勾选的股票代码列表变化
+
+    Usage:
+        sel = StockGroupSelector()
+        sel.set_groups([
+            ("银行", [("000001.SZ", "平安银行"), ("600000.SH", "浦发银行")]),
+            ("消费", [("600519.SH", "贵州茅台")]),
+        ])
+        sel.selection_changed.connect(self._on_selection_changed)
+        sel.set_selected(["000001.SZ"])  # 回显勾选
+    """
+
+    selection_changed = Signal(list)
+
+    def __init__(self, parent=None, max_height: int = 280):
+        super().__init__(parent)
+        self._building = False
+        self._groups = {}       # group_name -> info dict
+        self._total_stocks = 0
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+
+        # 搜索框
+        self._search = QLineEdit()
+        self._search.setPlaceholderText("🔍 搜索代码/名称")
+        self._search.setClearButtonEnabled(True)
+        self._search.textChanged.connect(self._on_search_changed)
+        layout.addWidget(self._search)
+
+        # 全选 / 清空 / 计数
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(8)
+        self._select_all_btn = QPushButton("全选")
+        self._select_all_btn.setObjectName("ghostBtn")
+        self._select_all_btn.clicked.connect(self._on_select_all)
+        self._clear_btn = QPushButton("清空")
+        self._clear_btn.setObjectName("ghostBtn")
+        self._clear_btn.clicked.connect(self._on_clear)
+        self._count_label = QLabel("已选 0/0 只")
+        self._count_label.setObjectName("captionLabel")
+        btn_row.addWidget(self._select_all_btn)
+        btn_row.addWidget(self._clear_btn)
+        btn_row.addStretch(1)
+        btn_row.addWidget(self._count_label)
+        layout.addLayout(btn_row)
+
+        # 分组树（可滚动）
+        self._scroll = QScrollArea()
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setFrameShape(QFrame.NoFrame)
+        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._scroll.setMaximumHeight(max_height)
+        self._tree = QWidget()
+        self._tree_layout = QVBoxLayout(self._tree)
+        self._tree_layout.setContentsMargins(0, 0, 0, 0)
+        self._tree_layout.setSpacing(0)
+
+        # 分组容器（所有分组挂这里，便于整体清空重建）
+        self._groups_container = QWidget()
+        self._groups_layout = QVBoxLayout(self._groups_container)
+        self._groups_layout.setContentsMargins(0, 0, 0, 0)
+        self._groups_layout.setSpacing(4)
+        self._tree_layout.addWidget(self._groups_container)
+
+        # 空状态提示
+        self._empty_label = QLabel("暂无自选股，请先在「自选股管理」页添加")
+        self._empty_label.setObjectName("captionLabel")
+        self._empty_label.setWordWrap(True)
+        self._empty_label.hide()
+        self._tree_layout.addWidget(self._empty_label)
+
+        self._tree_layout.addStretch(1)
+        self._scroll.setWidget(self._tree)
+        layout.addWidget(self._scroll, 1)
+
+    # ========== 数据设置 ==========
+
+    def set_groups(self, groups):
+        """设置分组数据
+
+        Args:
+            groups: [(group_name, [(symbol, name), ...]), ...]
+        """
+        self._building = True
+        try:
+            # 清空旧分组
+            for info in self._groups.values():
+                info["header_widget"].deleteLater()
+                info["container"].deleteLater()
+            self._groups = {}
+            while self._groups_layout.count():
+                item = self._groups_layout.takeAt(0)
+                w = item.widget()
+                if w:
+                    w.deleteLater()
+
+            total = 0
+            for group_name, stocks in groups:
+                self._add_group(group_name, stocks)
+                total += len(stocks)
+
+            self._total_stocks = total
+            self._empty_label.setVisible(total == 0)
+        finally:
+            self._building = False
+        self._update_all()
+
+    def _add_group(self, group_name, stocks):
+        # 组头行：折叠箭头 + 三态勾选 + 数量
+        header_widget = QWidget()
+        h = QHBoxLayout(header_widget)
+        h.setContentsMargins(0, 2, 0, 2)
+        h.setSpacing(4)
+
+        arrow = _ClickableLabel("▼")  # 默认展开
+
+        group_cb = QCheckBox(group_name)
+        group_cb.setTristate(True)
+        group_cb.setObjectName("groupHeader")
+
+        count = QLabel(f"{len(stocks)}")
+        count.setObjectName("captionLabel")
+
+        h.addWidget(arrow)
+        h.addWidget(group_cb)
+        h.addWidget(count)
+        h.addStretch(1)
+
+        # 组内股票
+        container = QWidget()
+        c = QVBoxLayout(container)
+        c.setContentsMargins(26, 0, 0, 6)
+        c.setSpacing(1)
+
+        stock_cbs = {}
+        for symbol, name in stocks:
+            cb = QCheckBox(f"{symbol} {name}")
+            cb.setProperty("symbol", symbol)
+            cb.stateChanged.connect(
+                lambda _s, s=symbol: self._on_stock_changed(s)
+            )
+            c.addWidget(cb)
+            stock_cbs[symbol] = cb
+
+        info = {
+            "header_widget": header_widget,
+            "header": group_cb,
+            "arrow": arrow,
+            "container": container,
+            "count": count,
+            "stocks": stock_cbs,
+            "collapsed": False,
+        }
+        self._groups[group_name] = info
+
+        arrow.clicked.connect(
+            lambda gn=group_name: self._on_toggle_group(gn)
+        )
+        group_cb.stateChanged.connect(
+            lambda state, gn=group_name: self._on_group_header_changed(gn, state)
+        )
+
+        self._groups_layout.addWidget(header_widget)
+        self._groups_layout.addWidget(container)
+
+    # ========== 查询 / 回显 ==========
+
+    def get_selected(self) -> List[str]:
+        """获取当前勾选的股票代码列表"""
+        return [s for s, cb in self._all_stock_cbs().items() if cb.isChecked()]
+
+    def set_selected(self, symbols: List[str]):
+        """设置勾选集合（回显）"""
+        symbol_set = set(symbols)
+        self._building = True
+        try:
+            for s, cb in self._all_stock_cbs().items():
+                cb.setChecked(s in symbol_set)
+        finally:
+            self._building = False
+        self._update_all()
+
+    def _all_stock_cbs(self) -> Dict[str, QCheckBox]:
+        result = {}
+        for info in self._groups.values():
+            for s, cb in info["stocks"].items():
+                result[s] = cb
+        return result
+
+    # ========== 交互槽 ==========
+
+    def _on_group_header_changed(self, group_name, state):
+        if self._building:
+            return
+        info = self._groups[group_name]
+        self._building = True
+        try:
+            # 组头是三态 QCheckBox：清空后首次点击会先落到 PartiallyChecked(1)，
+            # 若只把 state==Checked(2) 当"勾选"，会把 Partially 误判为取消，
+            # 导致"清空后点组头无法重新多选"。正确语义：除 Unchecked(0) 外，
+            # 均视为"组内全选"。stateChanged 传 int、Qt 枚举是 enum，二者值相同
+            # 但不等，用 or 兼容 signal 的 int 与手动调用传 enum 两种情况。
+            checked = not (state == Qt.Unchecked or state == Qt.Unchecked.value)
+            for cb in info["stocks"].values():
+                cb.setChecked(checked)
+        finally:
+            self._building = False
+        self._update_all()
+
+    def _on_stock_changed(self, symbol):
+        if self._building:
+            return
+        self._update_all()
+
+    def _on_toggle_group(self, group_name):
+        info = self._groups[group_name]
+        info["collapsed"] = not info["collapsed"]
+        info["arrow"].setText("▶" if info["collapsed"] else "▼")
+        self._apply_visibility()
+
+    def _on_search_changed(self, text):
+        self._apply_visibility()
+
+    def _on_select_all(self):
+        self._set_all(True)
+
+    def _on_clear(self):
+        self._set_all(False)
+
+    def _set_all(self, checked):
+        self._building = True
+        try:
+            for info in self._groups.values():
+                for cb in info["stocks"].values():
+                    cb.setChecked(checked)
+        finally:
+            self._building = False
+        self._update_all()
+
+    # ========== 可见性 / 计数 ==========
+
+    def _apply_visibility(self):
+        """按搜索关键词 + 折叠状态统一计算各组可见性"""
+        kw = self._search.text().strip().lower()
+        for info in self._groups.values():
+            any_visible = False
+            for symbol, cb in info["stocks"].items():
+                match = (not kw) or (kw in symbol.lower()) or (kw in cb.text().lower())
+                cb.setVisible(match)
+                if match:
+                    any_visible = True
+            info["header_widget"].setVisible(any_visible)
+            info["container"].setVisible(any_visible and not info["collapsed"])
+
+    def _update_all(self):
+        """统一刷新组头三态 + 计数 + 发信号"""
+        if self._building:
+            return
+        self._building = True
+        try:
+            for info in self._groups.values():
+                total = len(info["stocks"])
+                sel = sum(1 for cb in info["stocks"].values() if cb.isChecked())
+                if total == 0 or sel == 0:
+                    info["header"].setCheckState(Qt.Unchecked)
+                elif sel == total:
+                    info["header"].setCheckState(Qt.Checked)
+                else:
+                    info["header"].setCheckState(Qt.PartiallyChecked)
+        finally:
+            self._building = False
+        self._update_count()
+        self.selection_changed.emit(self.get_selected())
+
+    def _update_count(self):
+        sel = sum(1 for info in self._groups.values()
+                  for cb in info["stocks"].values() if cb.isChecked())
+        self._count_label.setText(f"已选 {sel}/{self._total_stocks} 只")

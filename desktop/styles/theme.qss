@@ -433,6 +433,21 @@ QRadioButton::indicator:checked {
     border-color: #378ADD;
 }
 
+/* 分组头（StockGroupSelector 组名，三态勾选） */
+QCheckBox#groupHeader {
+    font-weight: 600;
+    color: #212529;
+    font-size: 14px;
+}
+
+/* 分组折叠箭头（StockGroupSelector，▼/▶ 字符） */
+QLabel#groupArrow {
+    color: #6C757D;
+    font-size: 12px;
+    font-weight: 600;
+    background-color: transparent;
+}
+
 /* ---------- 表格 ---------- */
 QTableView {
     background-color: #FFFFFF;

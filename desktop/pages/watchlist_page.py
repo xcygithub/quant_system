@@ -282,7 +282,8 @@ class CheckableTableModel(QSortFilterProxyModel):
     def setData(self, index, value, role=Qt.EditRole):
         if index.column() == 0 and role == Qt.CheckStateRole:
             source_row = self.mapToSource(index).row()
-            if value == Qt.Checked:
+            # PySide6 6.x: CheckStateRole 的 value 可能是 int 或 enum，兼容比较
+            if value == Qt.Checked or value == Qt.Checked.value:
                 self._checked_rows.add(source_row)
             else:
                 self._checked_rows.discard(source_row)

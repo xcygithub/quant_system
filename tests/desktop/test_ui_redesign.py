@@ -190,6 +190,14 @@ class TestCheckableTableModel:
         assert proxy.checked_count() == 1
         assert 1 in proxy.checked_rows()
 
+    def test_set_data_check_state_int(self):
+        """回归：真实点击时 Qt 传 int 2（PySide6 6.x enum!=int，须兼容）"""
+        proxy = self._make_model()
+        idx = proxy.index(1, 0)
+        proxy.setData(idx, 2, Qt.CheckStateRole)  # 模拟真实点击传 int
+        assert proxy.checked_count() == 1
+        assert 1 in proxy.checked_rows()
+
     def test_header_data_checkbox_col(self):
         proxy = self._make_model()
         # Checkbox 列的表头为空

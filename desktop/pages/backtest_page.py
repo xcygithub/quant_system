@@ -26,7 +26,8 @@ from PySide6.QtCore import Qt, QDate
 
 from desktop.pages.base_page import BasePage
 from desktop.widgets.strategy_params_widget import StrategyParamsWidget
-from desktop.widgets.stock_selector import StockCheckboxGroup
+from desktop.widgets.stock_selector import StockGroupSelector
+from desktop.widgets.section_card import SectionCard
 from desktop.widgets.pandas_table import (
     PandasTableView, make_change_color_rule,
 )
@@ -115,13 +116,11 @@ class BacktestPage(BasePage):
         control = QHBoxLayout()
         control.setSpacing(12)
 
-        # 栏1：股票选择
-        stock_box = QGroupBox("股票选择（勾选参与回测）")
-        stock_box.setLayout(QVBoxLayout())
-        stock_box.layout().setContentsMargins(10, 12, 10, 10)
-        self._stock_group = StockCheckboxGroup(columns=1, max_height=260)
-        stock_box.layout().addWidget(self._stock_group)
-        control.addWidget(stock_box, 1)
+        # 栏1：股票选择（按自选股分组组织）
+        stock_card = SectionCard("股票选择")
+        self._stock_group = StockGroupSelector(max_height=280)
+        stock_card.content_layout.addWidget(self._stock_group)
+        control.addWidget(stock_card, 1)
 
         # 栏2：策略 + 参数
         strategy_box = QGroupBox("策略选择")
@@ -288,15 +287,25 @@ class BacktestPage(BasePage):
     def _refresh_stock_list(self):
         try:
             wl = Managers.instance().watchlist_manager
-            stocks = wl.get_all_stocks()
+            groups = wl.get_groups()
         except Exception as e:
             self._msg.error(f"读取自选股失败: {e}")
             return
-        # 排除默认指数
+
         from portfolio.watchlist import filter_out_benchmark_stocks
-        stocks = filter_out_benchmark_stocks(stocks)
-        self._all_stocks = [(s.symbol, s.name) for s in stocks]
-        self._stock_group.set_stocks(self._all_stocks)
+
+        # 按自选股分组组织股票（排除默认指数），保持分组顺序
+        grouped = []
+        self._all_stocks = []
+        for g in groups:
+            stocks = filter_out_benchmark_stocks(wl.get_stocks_by_group(g))
+            if not stocks:
+                continue  # 跳过空分组（含只剩指数的分组）
+            grouped.append((g, [(s.symbol, s.name) for s in stocks]))
+            self._all_stocks.extend((s.symbol, s.name) for s in stocks)
+
+        self._stock_group.set_groups(grouped)
+        # 默认全选（与旧行为一致）
         self._stock_group.set_selected([s for s, _ in self._all_stocks])
         if not self._all_stocks:
             self._msg.warning("⚠️ 暂无可回测自选股（默认指数已排除），请先添加股票。")
